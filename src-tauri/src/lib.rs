@@ -1,0 +1,62 @@
+pub mod analysis;
+pub mod commands;
+pub mod config;
+pub mod db;
+pub mod errors;
+pub mod llm;
+pub mod markdown;
+pub mod models;
+pub mod presets;
+pub mod scanner;
+pub mod services;
+pub mod utils;
+
+use tauri::Manager;
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .manage(services::AppServices::default())
+        .setup(|app| {
+            let services = app.state::<services::AppServices>().inner().clone();
+            std::thread::spawn(move || {
+                if let Ok(connection) = crate::db::open(&services.paths) {
+                    let _ = crate::db::migrate(&connection);
+                    let _ = crate::db::mark_stale_running_jobs_queued(&connection);
+                }
+                loop {
+                    match crate::analysis::run_next_analysis_job(&services.paths) {
+                        Ok(true) => {}
+                        Ok(false) => std::thread::sleep(std::time::Duration::from_secs(2)),
+                        Err(_) => std::thread::sleep(std::time::Duration::from_secs(5)),
+                    }
+                }
+            });
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::get_app_state,
+            commands::get_cached_app_state,
+            commands::scan_sources,
+            commands::review_project,
+            commands::import_historical_sessions,
+            commands::enqueue_analyze_sessions,
+            commands::enqueue_scan_sources,
+            commands::enqueue_analyze_project_sessions,
+            commands::enqueue_analyze_project,
+            commands::enqueue_analyze_session,
+            commands::enqueue_review_project,
+            commands::get_active_jobs,
+            commands::stop_job,
+            commands::read_markdown_file,
+            commands::save_llm_settings,
+            commands::update_task_status,
+            commands::create_task,
+            commands::delete_task,
+            commands::reset_sessions,
+            commands::reset_projects,
+            commands::reset_tasks
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running KittyNest");
+}
