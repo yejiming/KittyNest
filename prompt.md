@@ -1,46 +1,42 @@
-1. 修改Project Summary和Progress内容：不将llm输出的<think></think>块中的内容放到保存的文件中
-2. 修改Project详情页：第一张卡片需要展示3个Path：
-    - 目前这个是Project Path
-    - 还需要展示Project Summary Path（MD文件）和Project Progress Path（MD文件）
-3. 为什么会有某个Task关联Session数为0的情况，例如这个task：LLM 并发上限调整为 5
-
-
-1. 修改Task逻辑：
-    - 调整summary.md更新逻辑：新的session被归入某个任务后，更新逻辑改为增量插入新的内容
-    - summary.md保存路径改为：/Users/kc/.kittynest/projects/<project_name>/tasks/<task_slug>/
-    - 调整Task详情页展示：最上方标题不变，下面第一张卡片展示Path和状态信息，Path为任务保存的路径，Status维持现有的discussing/developing/done三个选项，并且在右侧增加一个delete按钮，点击后删除该Task（只有归属Session数为0的Task可以删除）
-    - 归属Session数为0的Task只允许为discussing状态
-    - 下面依次用不同卡片展示Session给出的Summary，按更新时间顺序展示，每张卡片标明更新时间和所属Session（点击可以跳转到该Session详情页）
-    - Related Sessions卡片删除
-    - done状态的Task不能再往里新增归属的Session，如果原有Session往Task更新了新的Summary，将状态改为developing
-2. 修改Session逻辑：
-    - Session分析结果改为放在/Users/kc/.kittynest/projects/<project_name>/sessions/<session_slug>/
-    - llm分析完session后，在对应的task summary.md增量更新一条信息，格式为{"content": "llm给出的summary", "timestamp": "session updated时间（不是当前时间）", "session": "session-slug"}
-3. 用户在settings页点击Reset Tasks后，删除所有Task的文件夹
-4. 用户在settings页点击Reset Sessions后，删除所有Session的文件夹
-5. 用户在settings页点击Reset Projects后，删除所有Project的summary.md和progress.md
-
-
 1. 修改Session Detail页面，将第一张卡片与第二张Path卡片合并，标题为第一张卡片标题，内容包括：原始Path、总结后的系统内Path
 2. 分析Session的顺序，改为按Updated倒序（越新的Session越先被分析）
 3. 修改Task逻辑：
     - 去掉当前Session自动新增Task的逻辑，仅支持用户在Task列表页手动新增Task
     - 新增Task时，下拉框选择Project（只能选状态为reviewed的Project），并在输入框输入提示词；llm基于用户提示词、Project的Summary和Progress、Project，提供一版更符合项目现实的提示词
     - 用户提示词保存在/Users/kc/.kittynest/projects/<project_name>/tasks/<task_slug>/user_prompt.md；llm给的提示词保存在/Users/kc/.kittynest/projects/<project_name>/tasks/<task_slug>/llm_prompt.md
-    - Task详情页内容：Task Info卡片下为User Prompt卡片展示user_prompt.md的内容（渲染为markdown）；再下方为llm_prompt.md的内容（渲染为markdown）；再下方为Task Summary（读取/Users/kc/.kittynest/projects/<project_name>/tasks/<task_slug>/summary.md，渲染为markdown）；再下方为Session列表（展示session name，点击可进入🇭相关session）
+    - Task详情页内容：Task Info卡片下为User Prompt卡片展示user_prompt.md的内容（渲染为markdown）；再下方为llm_prompt.md的内容（渲染为markdown）；再下方为Task Summary（读取/Users/kc/.kittynest/projects/<project_name>/tasks/<task_slug>/summary.md，渲染为markdown）；再下方为Session列表（展示session name，点击可进入相关session）
     - Task详情页在Delete左边新增一个Summary按钮，点击后llm基于当前同Project下所有Session的summary，得到Task Summary（保存在/Users/kc/.kittynest/projects/<project_name>/tasks/<task_slug>/summary.md）和相关Session列表（保存在sqlite），注意不要有任何本地fallback逻辑，一定要使用llm得到结果
 4. 修改Session逻辑：不再有更新task summary的逻辑
 5. 现在各个卡片中渲染为markdown的地方，表格好像没有渲染成功，需要优化
 
 
-1. 优化Dashboard页UI：
-    - Projects卡片和Recent Sessions卡片的滑动条风格与整体不搭，并且默认状态不要展示出来
-    - Projects/Recent Sessions的第一列名称只展示前10个字母，剩余用...表示
-2. 目前的markdown渲染，是项目内实现的吗，可以考虑用外部包来渲染啊
+优化Settings：
+1. LLM Global Settings修改后没法保存，卡片左上角增加一个Save按钮
+2. config.toml中[[llm]]api_key, base_url好像是冗余字段，可以删掉，不需要兼容旧逻辑
+3. LLM Provider左栏可以宽一些，去掉Saved Models和Use Model For这两个标题，下面每一个下拉框，标题和下拉框放同一行
+4. 左栏的模型列表下方增加一个加号虚框，点击后右栏展示一个空白设置项，输入内容点击Save Model后，在模型列表中增加一个模型
+5. 左栏高度与右栏保持一致，如果内容超出，则增加垂直滑动条，UI上隐藏该滑动条
+6. 左栏的Task Model改名为Assistant Model，支持Assistant Drawer任务（当前留空）
+7. Memory模型不仅要用于entity消歧，还要用于memory搜索时对用户输入的entity提取
+
+优化memory搜索：在 extract_memory_search_entities 调用前，先把 graph 中已有的 entity 列表取出来，让 LLM 从中挑选出现在
+查询里的 entity，而不是自由提取：
+Graph entities: ["kittycopilot", "tauri", "react", "sqlite", ...]
+User query: "kittycopilot项目是做什么的"
+Return JSON: {"entities": ["kittycopilot"]}
+这样 LLM 不会发明 "kittycopilot项目" 这种 graph 中不存在的变体。
+
+优化Tasks：
+1. Task页面：去掉Create Task卡片
+2. Agent Drawer：左侧菜单栏删掉最下方Local Ledger、SQLite synced这个卡片，改为一个Assistant按钮，点击后页面右侧弹出紧贴边框、悬浮在页面上方的Agent聊天Drawer；该Drawer左侧边框可用于调整宽度（设置一个合理的最小宽度）
+3. Drawer功能：参考/Users/kc/Desktop/个人资料/个人项目/KittyCopilot项目（该项目使用python，本项目需要用rust实现），支持Agent助手功能，llm使用Settings中设置的Task模型
+4. Tool列表和User Permission：参考/Users/kc/Desktop/个人资料/个人项目/KittyCopilot/kittycopilot/tools和/Users/kc/Desktop/个人资料/个人项目/KittyCopilot/kittycopilot/hooks/user_permission.py的实现（该项目使用python，本项目需要用rust实现），需支持read_file, ask_user, todo_write, grep, glob几个tool
+5. 消息展示，参考KittyCopilot项目，消息基于websocket做流式展示，模型返回的<think></think>块内容放在Thinking块中（默认一行缩略，点击展开详情）；tool call和tool result放在Tool卡片（同一个tool call ID放一张卡片，默认一行缩略，点击展开详情）；Assistant消息在聊天栏展开全文（渲染成Markdown）；user_permission和ask_user在聊天栏内用卡片展示，用户选完后卡片隐藏；TODO项卡片放在输入框上沿中间，有TODO项时默认展开，可点击上沿中间的Font缩略/展开，无TODO项时该卡片隐藏
+6. 输入框：Drawer下方为输入框，输入框左下角为圆形齿轮按钮，右下方为Send/Stop按钮（圆形Font表示），Send/Stop按钮左边为context小圆圈
+7. 齿轮按钮：点击后弹出任务选择Modal，上方是任务类型标签，目前仅支持Task Assistant；进入该标签展示任务选项，Task Assistant需要选择Project（下拉框，仅支持状态为reviewed的Projects）
+8. Send/Stop按钮：未发送信息展示为Send状态，发送后展示为Stop状态，Stop状态时点击可中断任务
+9. context小圆圈：size比Send/Stop按钮小一号，用灰色圆环图展示agent使用上下文的占比，鼠标hover上去展开一个tooltip（风格适配整体UI，内容是当前context长度、System/User/Assistant/Thinking/Tool分别的上下文占比，一位小数百分比表示）
 
 
-目前项目还没有实现memory模块，我想要这样实现memory功能，帮我想想该怎么实现，先不深入技术细节，只讨论大致路线：
-- llm取Session的summary信息，将Session级记忆写入 `~/.kittynest/memories/projects/<session_slug>/<session_slug>.md`
-- llm一次性读取项目下所有的session级记忆，将项目级记忆写入 `~/.kittynest/memories/projects/<project_name>.md`
-- llm一次性读取所有项目的项目级记忆，将系统级记忆写入 `~/.kittynest/memories/memory.md`
-- 构建一个实体-关系组成的图数据库，将所有的session记忆关联起来
+
+    

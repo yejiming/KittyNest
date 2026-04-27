@@ -101,21 +101,92 @@ fn acquire_llm_permit() -> LlmPermit {
     LlmPermit { gate }
 }
 
+fn openai_chat_body(
+    settings: &LlmSettings,
+    system_prompt: &str,
+    user_prompt: &str,
+    json_response: bool,
+) -> serde_json::Value {
+    let (system_prompt, user_prompt) = limited_prompts(settings, system_prompt, user_prompt);
+    let mut body = serde_json::json!({
+        "model": settings.model.clone(),
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "max_tokens": effective_max_tokens(settings),
+        "temperature": effective_temperature(settings)
+    });
+    if json_response {
+        body["response_format"] = serde_json::json!({"type": "json_object"});
+    }
+    body
+}
+
+fn anthropic_messages_body(
+    settings: &LlmSettings,
+    system_prompt: &str,
+    user_prompt: &str,
+) -> serde_json::Value {
+    let (system_prompt, user_prompt) = limited_prompts(settings, system_prompt, user_prompt);
+    serde_json::json!({
+        "model": settings.model.clone(),
+        "max_tokens": effective_max_tokens(settings),
+        "temperature": effective_temperature(settings),
+        "system": system_prompt,
+        "messages": [
+            {"role": "user", "content": user_prompt}
+        ]
+    })
+}
+
+fn effective_max_tokens(settings: &LlmSettings) -> usize {
+    if settings.max_tokens == 0 {
+        4096
+    } else {
+        settings.max_tokens
+    }
+}
+
+fn effective_temperature(settings: &LlmSettings) -> f64 {
+    if settings.temperature.is_finite() {
+        settings.temperature
+    } else {
+        0.2
+    }
+}
+
+fn limited_prompts(
+    settings: &LlmSettings,
+    system_prompt: &str,
+    user_prompt: &str,
+) -> (String, String) {
+    let Some(limit) = settings.max_context.checked_mul(4).filter(|limit| *limit > 0) else {
+        return (system_prompt.to_string(), user_prompt.to_string());
+    };
+    let system_len = system_prompt.chars().count();
+    if system_len >= limit {
+        return (tail_chars(system_prompt, limit), String::new());
+    }
+    let user_limit = limit - system_len;
+    (system_prompt.to_string(), tail_chars(user_prompt, user_limit))
+}
+
+fn tail_chars(value: &str, limit: usize) -> String {
+    let chars = value.chars().collect::<Vec<_>>();
+    if chars.len() <= limit {
+        return value.to_string();
+    }
+    chars[chars.len() - limit..].iter().collect()
+}
+
 fn request_openai_json(
     settings: &LlmSettings,
     system_prompt: &str,
     user_prompt: &str,
 ) -> anyhow::Result<LlmJsonResponse> {
     let endpoint = endpoint(&settings.base_url, "chat/completions");
-    let body = serde_json::json!({
-        "model": settings.model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "temperature": 0.2,
-        "response_format": {"type": "json_object"}
-    });
+    let body = openai_chat_body(settings, system_prompt, user_prompt, true);
     let response = post_openai_json(&endpoint, &settings.api_key, &body)?;
     let content = response
         .pointer("/choices/0/message/content")
@@ -133,14 +204,7 @@ fn request_openai_text(
     user_prompt: &str,
 ) -> anyhow::Result<LlmTextResponse> {
     let endpoint = endpoint(&settings.base_url, "chat/completions");
-    let body = serde_json::json!({
-        "model": settings.model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "temperature": 0.2
-    });
+    let body = openai_chat_body(settings, system_prompt, user_prompt, false);
     let response = post_openai_json(&endpoint, &settings.api_key, &body)?;
     let content = response
         .pointer("/choices/0/message/content")
@@ -158,14 +222,7 @@ fn request_anthropic_json(
     user_prompt: &str,
 ) -> anyhow::Result<LlmJsonResponse> {
     let endpoint = endpoint(&settings.base_url, "messages");
-    let body = serde_json::json!({
-        "model": settings.model,
-        "max_tokens": 4096,
-        "system": system_prompt,
-        "messages": [
-            {"role": "user", "content": user_prompt}
-        ]
-    });
+    let body = anthropic_messages_body(settings, system_prompt, user_prompt);
     let response = post_anthropic_json(&endpoint, &settings.api_key, &body)?;
     let content = response
         .get("content")
@@ -188,14 +245,7 @@ fn request_anthropic_text(
     user_prompt: &str,
 ) -> anyhow::Result<LlmTextResponse> {
     let endpoint = endpoint(&settings.base_url, "messages");
-    let body = serde_json::json!({
-        "model": settings.model,
-        "max_tokens": 4096,
-        "system": system_prompt,
-        "messages": [
-            {"role": "user", "content": user_prompt}
-        ]
-    });
+    let body = anthropic_messages_body(settings, system_prompt, user_prompt);
     let response = post_anthropic_json(&endpoint, &settings.api_key, &body)?;
     let content = response
         .get("content")
@@ -216,10 +266,14 @@ fn http_client() -> &'static reqwest::blocking::Client {
     static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(60))
+            .timeout(llm_http_timeout())
             .build()
             .expect("failed to build LLM HTTP client")
     })
+}
+
+fn llm_http_timeout() -> Duration {
+    Duration::from_secs(300)
 }
 
 fn post_openai_json(
@@ -464,5 +518,46 @@ mod tests {
             *lock.lock().expect("release lock poisoned") = true;
             cvar.notify_all();
         });
+    }
+
+    #[test]
+    fn http_client_timeout_is_five_minutes() {
+        assert_eq!(
+            super::llm_http_timeout(),
+            std::time::Duration::from_secs(300)
+        );
+    }
+
+    #[test]
+    fn openai_body_uses_global_limits_and_context_budget() {
+        let mut settings = crate::config::default_llm_settings();
+        settings.model = "openai/gpt-4o-mini".into();
+        settings.max_context = 4;
+        settings.max_tokens = 123;
+        settings.temperature = 0.7;
+
+        let body = super::openai_chat_body(&settings, "system", "12345678901234567890", true);
+
+        assert_eq!(body["max_tokens"], 123);
+        assert_eq!(body["temperature"], 0.7);
+        assert_eq!(body["response_format"]["type"], "json_object");
+        let user_prompt = body["messages"][1]["content"].as_str().unwrap();
+        assert!(user_prompt.chars().count() <= 16);
+        assert!(user_prompt.contains("7890"));
+    }
+
+    #[test]
+    fn anthropic_body_uses_global_limits_and_temperature() {
+        let mut settings = crate::config::default_llm_settings();
+        settings.model = "claude-3-5-sonnet-latest".into();
+        settings.max_tokens = 321;
+        settings.temperature = 0.4;
+
+        let body = super::anthropic_messages_body(&settings, "system", "user");
+
+        assert_eq!(body["max_tokens"], 321);
+        assert_eq!(body["temperature"], 0.4);
+        assert_eq!(body["system"], "system");
+        assert_eq!(body["messages"][0]["content"], "user");
     }
 }

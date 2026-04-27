@@ -9,6 +9,7 @@ src-tauri/gen/
 
 # Local tooling
 .codex/
+.git/
 *.tsbuildinfo
 
 # Environment files
@@ -27,3 +28,6 @@ pnpm-debug.log*
 # OS files
 .DS_Store
 Thumbs.db
+
+# Prompts
+prompt.md

@@ -52,12 +52,41 @@ impl AppPaths {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct LlmSettings {
+pub struct LlmModelSettings {
+    pub id: String,
+    pub remark: String,
     pub provider: String,
     pub base_url: String,
     pub interface: String,
     pub model: String,
     pub api_key: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmScenarioModels {
+    pub default_model: String,
+    pub project_model: String,
+    pub session_model: String,
+    pub memory_model: String,
+    pub task_model: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmSettings {
+    pub id: String,
+    pub remark: String,
+    pub provider: String,
+    pub base_url: String,
+    pub interface: String,
+    pub model: String,
+    pub api_key: String,
+    pub max_context: usize,
+    pub max_tokens: usize,
+    pub temperature: f64,
+    pub models: Vec<LlmModelSettings>,
+    pub scenario_models: LlmScenarioModels,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -69,6 +98,7 @@ pub struct ProjectRecord {
     pub sources: Vec<String>,
     pub info_path: Option<String>,
     pub progress_path: Option<String>,
+    pub user_preference_path: Option<String>,
     pub review_status: String,
     pub last_reviewed_at: Option<String>,
     pub last_session_at: Option<String>,
@@ -121,7 +151,7 @@ pub struct SourceStatus {
     pub exists: bool,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AppStateDto {
     pub data_dir: String,
@@ -196,4 +226,45 @@ pub struct CreateTaskResult {
     pub total: usize,
     pub user_prompt_path: String,
     pub llm_prompt_path: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemorySearchRecord {
+    pub id: i64,
+    pub job_id: i64,
+    pub query: String,
+    pub status: String,
+    pub message: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub results: Vec<MemorySearchResultRecord>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemorySearchResultRecord {
+    pub source_session: String,
+    pub session_title: String,
+    pub project_slug: String,
+    pub memory: String,
+    pub ordinal: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMemoryDetail {
+    pub session_id: String,
+    pub memory_path: String,
+    pub memories: Vec<String>,
+    pub related_sessions: Vec<MemoryRelatedSession>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryRelatedSession {
+    pub session_id: String,
+    pub title: String,
+    pub project_slug: String,
+    pub shared_entities: Vec<String>,
 }

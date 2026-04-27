@@ -12,24 +12,44 @@ import {
   Loader2,
   RefreshCw,
   ScanLine,
+  Send,
   Settings,
   ShieldCheck,
   Sparkles,
   TerminalSquare,
   Trash2,
 } from "lucide-react";
+import {
+  Background,
+  Controls,
+  MarkerType,
+  ReactFlow,
+  type Edge,
+  type Node,
+  useNodesState,
+} from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
 import { useEffect, useMemo, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   createTask,
+  enqueueAnalyzeSessions,
   enqueueAnalyzeSession,
   enqueueAnalyzeProject,
-  enqueueAnalyzeSessions,
+  enqueueRebuildMemories,
   enqueueScanSources,
+  enqueueSearchMemories,
   getActiveJobs,
   getAppState,
   getCachedAppState,
+  getMemorySearch,
+  getSessionMemory,
+  listEntitySessions,
+  listMemoryEntities,
   readMarkdownFile,
   deleteTask,
+  resetMemories,
   resetProjects,
   resetSessions,
   resetTasks,
@@ -38,7 +58,18 @@ import {
   isTauriRuntime,
   stopJob,
 } from "./api";
-import type { AppState, LlmSettings, ProjectRecord, SessionRecord, TaskRecord } from "./types";
+import type {
+  AppState,
+  LlmModelSettings,
+  LlmSettings,
+  MemoryEntityRecord,
+  MemoryRelatedSession,
+  MemorySearchRecord,
+  ProjectRecord,
+  SessionMemoryDetail,
+  SessionRecord,
+  TaskRecord,
+} from "./types";
 
 type View =
   | "dashboard"
@@ -146,12 +177,6 @@ export default function App() {
     }
   }
 
-  const queueAllSessions = (label = "Queue session analysis", updatedAfter?: string) =>
-    runQueueAction(label, async () => {
-      const result = await enqueueAnalyzeSessions(updatedAfter);
-      return `Analysis queued: ${result.total} session${result.total === 1 ? "" : "s"}`;
-    });
-
   const queueSession = (sessionId: string) =>
     runQueueAction("Queue session analysis", async () => {
       const result = await enqueueAnalyzeSession(sessionId);
@@ -162,6 +187,12 @@ export default function App() {
     runQueueAction("Queue project analyze", async () => {
       const result = await enqueueAnalyzeProject(projectSlug);
       return `Project analysis queued: ${result.total} step${result.total === 1 ? "" : "s"}`;
+    });
+
+  const queueSessionsAnalyze = (updatedAfter?: string) =>
+    runQueueAction("Queue sessions analysis", async () => {
+      const result = await enqueueAnalyzeSessions(updatedAfter);
+      return `Session analysis queued: ${result.total} session${result.total === 1 ? "" : "s"}`;
     });
 
   const createManualTask = (projectSlug: string, userPrompt: string) =>
@@ -215,7 +246,7 @@ export default function App() {
           <span />
           <span />
         </div>
-        <button className="brand" onClick={() => setView("dashboard")}>
+        <button className="brand" aria-label="Dashboard home" onClick={() => setView("dashboard")}>
           <Boxes size={32} />
           <span>
             <strong>KittyNest</strong>
@@ -277,6 +308,10 @@ export default function App() {
               setSelectedSession(sessionId);
               setView("sessionDetail");
             }}
+            onRefreshMemories={() => runQueueAction("Refresh memories", async () => {
+              const result = await enqueueRebuildMemories();
+              return `Memory refresh queued: ${result.total} step${result.total === 1 ? "" : "s"}`;
+            })}
             onStopJob={stopAnalyzeJob}
           />
         )}
@@ -344,9 +379,10 @@ export default function App() {
 
         {view === "sessions" && (
           <SessionsList
+            projects={state.projects}
             sessions={state.sessions}
             busy={busy}
-            onAnalyze={(updatedAfter) => queueAllSessions("Queue session analysis", updatedAfter)}
+            onAnalyze={queueSessionsAnalyze}
             onOpen={(sessionId) => {
               setSelectedSession(sessionId);
               setView("sessionDetail");
@@ -359,13 +395,30 @@ export default function App() {
             session={currentSession}
             busy={busy}
             onAnalyze={() => queueSession(currentSession.sessionId)}
+            onOpenSession={(sessionId) => {
+              setSelectedSession(sessionId);
+              setView("sessionDetail");
+            }}
           />
         )}
-        {view === "memories" && <MemoryView state={state} />}
+        {view === "memories" && (
+          <MemoryView
+            jobs={state.jobs}
+            sessions={state.sessions}
+            onOpenSession={(sessionId) => {
+              setSelectedSession(sessionId);
+              setView("sessionDetail");
+            }}
+            onSearch={(query) => runQueueAction("Search memories", async () => {
+              const result = await enqueueSearchMemories(query);
+              return `Memory search queued: ${result.total} job${result.total === 1 ? "" : "s"}`;
+            })}
+          />
+        )}
         {view === "settings" && <SettingsView state={state} onSave={(settings) => runAction("Save settings", async () => {
           await saveLlmSettings(settings);
           return "LLM settings saved";
-        })}
+        }, "cached")}
           busy={busy}
           onResetSessions={() => runAction("Reset sessions", async () => {
             const result = await resetSessions();
@@ -378,6 +431,10 @@ export default function App() {
           onResetTasks={() => runAction("Reset tasks", async () => {
             const result = await resetTasks();
             return `Tasks reset: ${result.reset}`;
+          }, "cached")}
+          onResetMemories={() => runAction("Reset memories", async () => {
+            const result = await resetMemories();
+            return `Memories reset: ${result.reset}`;
           }, "cached")}
         />}
       </main>
@@ -402,6 +459,7 @@ function Dashboard({
   onCreateTask,
   onOpenProject,
   onOpenSession,
+  onRefreshMemories,
   onStopJob,
 }: {
   state: AppState;
@@ -414,6 +472,7 @@ function Dashboard({
   onCreateTask: () => void;
   onOpenProject: (slug: string) => void;
   onOpenSession: (sessionId: string) => void;
+  onRefreshMemories: () => void;
   onStopJob: (jobId: number) => void;
 }) {
   const recentSessions = [...state.sessions].sort(
@@ -434,7 +493,7 @@ function Dashboard({
             <button key={project.slug} className="project-row" onClick={() => onOpenProject(project.slug)}>
               <span className="hex">{project.slug.slice(0, 1)}</span>
               <span>
-                <strong>{project.displayTitle}</strong>
+                <strong>{truncateDashboardLabel(project.displayTitle)}</strong>
               </span>
               <em>{project.reviewStatus.replace("_", " ")}</em>
             </button>
@@ -456,7 +515,7 @@ function Dashboard({
           </div>
           {recentSessions.map((session) => (
             <button key={session.sessionId} className="session-row" onClick={() => onOpenSession(session.sessionId)}>
-              <span>{session.title ?? session.sessionId}</span>
+              <span>{truncateDashboardLabel(session.title ?? session.sessionId)}</span>
               <small>{session.projectSlug}</small>
               <small>{session.source}</small>
               <small>{compactAgeLabel(session.updatedAt || session.createdAt)}</small>
@@ -485,7 +544,7 @@ function Dashboard({
       </section>
 
       <section className="panel pulse-panel">
-        <PanelTitle title="Memory Pulse" action={<IconButton label="Refresh" icon={<RefreshCw size={16} />} onClick={() => undefined} />} />
+        <PanelTitle title="Memory Pulse" action={<IconButton label="Refresh" icon={<RefreshCw size={16} />} onClick={onRefreshMemories} busy={busy === "Refresh memories"} />} />
         <div className="pulse">
           <BrainCircuit size={54} />
           <strong>Project memory draft</strong>
@@ -613,20 +672,22 @@ function TasksList({
 }
 
 function SessionsList({
+  projects,
   sessions,
   busy,
   onAnalyze,
   onOpen,
 }: {
+  projects: ProjectRecord[];
   sessions: SessionRecord[];
   busy: string | null;
   onAnalyze: (updatedAfter?: string) => void;
   onOpen: (sessionId: string) => void;
 }) {
-  const [updatedWindow, setUpdatedWindow] = useState("7");
-  const updatedAfter = updatedWindow === "all"
-    ? undefined
-    : new Date(Date.now() - Number(updatedWindow) * 24 * 60 * 60 * 1000).toISOString();
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [analyzeRange, setAnalyzeRange] = useState<AnalyzeRange>("7days");
+  const sessionsByProject = (projectSlug: string) =>
+    sessions.filter((session) => session.projectSlug === projectSlug && session.status === "analyzed");
   return (
     <section className="detail-layout">
       <div className="panel wide">
@@ -635,41 +696,64 @@ function SessionsList({
           action={
             <div className="panel-actions">
               <label className="inline-select">
-                Updated
-                <select value={updatedWindow} onChange={(event) => setUpdatedWindow(event.target.value)}>
-                  <option value="3">3 days</option>
-                  <option value="7">7 days</option>
-                  <option value="30">30 days</option>
-                  <option value="90">90 days</option>
-                  <option value="all">All</option>
+                <span>Analyze range</span>
+                <select
+                  aria-label="Analyze range"
+                  value={analyzeRange}
+                  onChange={(event) => setAnalyzeRange(event.target.value as AnalyzeRange)}
+                >
+                  <option value="3days">3days</option>
+                  <option value="7days">7days</option>
+                  <option value="30days">30days</option>
+                  <option value="All">All</option>
                 </select>
               </label>
-              <IconButton label="Analyze" icon={<Sparkles size={16} />} onClick={() => onAnalyze(updatedAfter)} busy={busy === "Queue session analysis"} />
+              <IconButton
+                label="Analyze"
+                icon={<Sparkles size={16} />}
+                onClick={() => onAnalyze(updatedAfterForAnalyzeRange(analyzeRange))}
+                busy={busy === "Queue sessions analysis"}
+              />
             </div>
           }
         />
-        <div className="list-page data-table sessions-table" role="table">
+        <div className="list-page data-table projects-table" role="table">
           <div className="table-header" role="row">
             <span role="columnheader">Name</span>
             <span role="columnheader">Path</span>
-            <span role="columnheader">Project</span>
-            <span role="columnheader">Task</span>
-            <span role="columnheader">Source</span>
             <span role="columnheader">Status</span>
-            <span role="columnheader">Updated</span>
+            <span role="columnheader">Source</span>
           </div>
-          {sessions.map((session) => (
-            <button key={session.sessionId} className="list-row" onClick={() => onOpen(session.sessionId)}>
-              <strong>{session.title ?? session.sessionId}</strong>
-              <span>{session.rawPath}</span>
-              <span>{session.projectSlug}</span>
-              <span>{session.taskSlug ?? "unassigned"}</span>
-              <small>{session.source}</small>
-              <small>{session.status}</small>
-              <small>{compactAgeLabel(session.updatedAt || session.createdAt)}</small>
-            </button>
+          {projects.map((project) => (
+            <div key={project.slug} className="memory-project-row">
+              <button
+                className="list-row"
+                onClick={() => setExpanded(expanded === project.slug ? null : project.slug)}
+              >
+                <strong>{project.displayTitle}</strong>
+                <span>{project.workdir}</span>
+                <small>{project.reviewStatus.replace("_", " ")}</small>
+                <small>{project.sources.join(" / ") || "local"}</small>
+              </button>
+              {expanded === project.slug && (
+                <div className="nested-sessions sessions-table">
+                  {sessionsByProject(project.slug).map((session) => (
+                    <button key={session.sessionId} className="list-row" onClick={() => onOpen(session.sessionId)}>
+                      <strong>{session.title ?? session.sessionId}</strong>
+                      <span>{session.rawPath}</span>
+                      <span>{session.projectSlug}</span>
+                      <span>{session.taskSlug ?? "unassigned"}</span>
+                      <small>{session.source}</small>
+                      <small>{session.status}</small>
+                      <small>{compactAgeLabel(session.updatedAt || session.createdAt)}</small>
+                    </button>
+                  ))}
+                  {sessionsByProject(project.slug).length === 0 && <EmptyLine text="No memories yet." />}
+                </div>
+              )}
+            </div>
           ))}
-          {sessions.length === 0 && <EmptyLine text="No sessions yet." />}
+          {projects.length === 0 && <EmptyLine text="No projects yet. Scan sources to discover local sessions." />}
         </div>
       </div>
     </section>
@@ -697,14 +781,28 @@ function ProjectView({
           <ProjectPath label="Project Path" value={project.workdir} />
           <ProjectPath label="Project Summary Path" value={project.infoPath ?? "Not generated yet."} />
           <ProjectPath label="Project Progress Path" value={project.progressPath ?? "Not generated yet."} />
+          <ProjectPath label="User Preference Path" value={project.userPreferencePath ?? "Not generated yet."} />
         </div>
         <div className="button-row">
           <IconButton label="Analyze" icon={<Sparkles size={16} />} onClick={onAnalyze} busy={busy === "Queue project analyze"} />
         </div>
       </div>
       <div className="markdown-stack">
-        <MarkdownPanel title="Project Summary" path={project.infoPath} empty="Review has not been generated yet." />
-        <MarkdownPanel title="Progress" path={project.progressPath} empty="Import historical sessions to generate progress." />
+        <MarkdownPanel
+          title="Project Summary"
+          path={project.infoPath}
+          empty="Review has not been generated yet."
+        />
+        <MarkdownPanel
+          title="Progress"
+          path={project.progressPath}
+          empty="Import historical sessions to generate progress."
+        />
+        <MarkdownPanel
+          title="User Preference"
+          path={project.userPreferencePath}
+          empty="Analyze the project to generate user preferences."
+        />
       </div>
       <div className="task-grid">
         {tasks.map((task) => (
@@ -728,121 +826,73 @@ function ProjectPath({ label, value }: { label: string; value: string }) {
   );
 }
 
-function MarkdownPanel({ title, path, empty }: { title: string; path: string | null; empty: string }) {
+function MarkdownPanel({
+  title,
+  path,
+  empty,
+}: {
+  title: string;
+  path: string | null;
+  empty: string;
+}) {
   const [content, setContent] = useState("");
   const [error, setError] = useState("");
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     setContent("");
     setError("");
+    setCopied(false);
     if (!path) return;
     void readMarkdownFile(path)
       .then((result) => setContent(result.content))
       .catch((error) => setError(error instanceof Error ? error.message : String(error)));
   }, [path]);
 
+  const copyMarkdown = () => {
+    if (!content || !navigator.clipboard) return;
+    void navigator.clipboard.writeText(content).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    });
+  };
+
   return (
     <div className="panel markdown-panel">
-      <h3>{title}</h3>
+      <div className="markdown-panel-head">
+        <h3>{title}</h3>
+        <button
+          type="button"
+          className="markdown-copy-button"
+          aria-label={`Copy ${title} markdown`}
+          disabled={!content}
+          onClick={copyMarkdown}
+        >
+          {copied ? "OK" : "COPY"}
+        </button>
+      </div>
       <div className="markdown-scroll">
-        {content ? <MarkdownBlock content={content} /> : <p>{error || empty}</p>}
+        {content ? <MarkdownContent content={content} /> : <p>{error || empty}</p>}
       </div>
     </div>
   );
 }
 
-function MarkdownBlock({ content }: { content: string }) {
-  const lines = content.replace(/^---[\s\S]*?---\s*/, "").split(/\r?\n/);
-  const nodes: React.ReactNode[] = [];
-  let index = 0;
-  while (index < lines.length) {
-    const line = lines[index];
-    const next = lines[index + 1];
-    if (isMarkdownTableStart(line, next)) {
-      const headers = parseMarkdownTableRow(line);
-      const rows: string[][] = [];
-      index += 2;
-      while (index < lines.length && parseMarkdownTableRow(lines[index]).length) {
-        rows.push(parseMarkdownTableRow(lines[index]));
-        index += 1;
-      }
-      nodes.push(
-        <table key={`table-${index}`}>
-          <thead>
-            <tr>
-              {headers.map((header, cellIndex) => (
-                <th key={cellIndex}>{renderInline(header)}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, rowIndex) => (
-              <tr key={rowIndex}>
-                {headers.map((_, cellIndex) => (
-                  <td key={cellIndex}>{renderInline(row[cellIndex] ?? "")}</td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>,
-      );
-      continue;
-    }
-
-    if (line.startsWith("### ")) nodes.push(<h3 key={index}>{renderInline(line.slice(4))}</h3>);
-    else if (line.startsWith("## ")) nodes.push(<h2 key={index}>{renderInline(line.slice(3))}</h2>);
-    else if (line.startsWith("# ")) nodes.push(<h1 key={index}>{renderInline(line.slice(2))}</h1>);
-    else if (line.startsWith("- ")) nodes.push(<p key={index} className="markdown-list-item">{renderInline(line.slice(2))}</p>);
-    else if (!line.trim()) nodes.push(<br key={index} />);
-    else nodes.push(<p key={index}>{renderInline(line)}</p>);
-    index += 1;
-  }
+function MarkdownContent({ content }: { content: string }) {
   return (
     <div className="markdown-body">
-      {nodes}
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{stripFrontmatter(content)}</ReactMarkdown>
     </div>
   );
 }
 
-function isMarkdownTableStart(line: string, next?: string) {
-  const headers = parseMarkdownTableRow(line);
-  return headers.length > 0 && Boolean(next && isMarkdownTableSeparator(next, headers.length));
+function stripFrontmatter(content: string) {
+  return content.replace(/^---[\s\S]*?---\s*/, "").trim();
 }
 
-function isMarkdownTableSeparator(line: string, columnCount: number) {
-  const cells = parseMarkdownTableRow(line);
-  return cells.length === columnCount && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
-}
-
-function parseMarkdownTableRow(line: string) {
-  const trimmed = line.trim();
-  if (!trimmed.includes("|")) return [];
-  const withoutEdges = trimmed.replace(/^\|/, "").replace(/\|$/, "");
-  const cells = withoutEdges.split("|").map((cell) => cell.trim());
-  return cells.length > 1 && cells.every((cell) => cell.length > 0) ? cells : [];
-}
-
-function renderInline(text: string) {
-  const nodes: React.ReactNode[] = [];
-  const pattern = /(\*\*[^*]+\*\*|`[^`]+`)/g;
-  let lastIndex = 0;
-  for (const match of text.matchAll(pattern)) {
-    const index = match.index ?? 0;
-    if (index > lastIndex) {
-      nodes.push(text.slice(lastIndex, index));
-    }
-    const token = match[0];
-    if (token.startsWith("**")) {
-      nodes.push(<strong key={index}>{token.slice(2, -2)}</strong>);
-    } else {
-      nodes.push(<code key={index}>{token.slice(1, -1)}</code>);
-    }
-    lastIndex = index + token.length;
-  }
-  if (lastIndex < text.length) {
-    nodes.push(text.slice(lastIndex));
-  }
-  return nodes.length ? nodes : text;
+function truncateDashboardLabel(value: string) {
+  const characters = Array.from(value);
+  return characters.length > 10 ? `${characters.slice(0, 10).join("")}...` : value;
 }
 
 function TaskView({
@@ -859,6 +909,7 @@ function TaskView({
   onOpenSession: (sessionId: string) => void;
 }) {
   const orderedSessions = [...sessions].sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
+  const taskDir = taskDirectoryPath(task);
   return (
     <section className="detail-layout">
       <div className="panel wide">
@@ -885,6 +936,18 @@ function TaskView({
           ))}
         </div>
       </div>
+      <div className="markdown-stack">
+        <MarkdownPanel
+          title="User Prompt"
+          path={`${taskDir}/user_prompt.md`}
+          empty="User prompt has not been written yet."
+        />
+        <MarkdownPanel
+          title="LLM Prompt"
+          path={`${taskDir}/llm_prompt.md`}
+          empty="LLM prompt has not been written yet."
+        />
+      </div>
       <div className="task-summary-stack">
         {orderedSessions.map((session) => (
           <button
@@ -898,7 +961,7 @@ function TaskView({
               <small>{session.updatedAt}</small>
             </div>
             <span>{session.sessionId}</span>
-            <MarkdownBlock content={session.summary ?? "No session summary yet."} />
+            <MarkdownContent content={session.summary ?? "No session summary yet."} />
           </button>
         ))}
         {orderedSessions.length === 0 && <div className="panel wide"><EmptyLine text="No session summaries yet." /></div>}
@@ -908,20 +971,36 @@ function TaskView({
 }
 
 function taskDirectoryPath(task: TaskRecord) {
-  return task.summaryPath.endsWith("/summary.md")
-    ? task.summaryPath.slice(0, -"/summary.md".length)
-    : task.summaryPath;
+  for (const filename of ["/summary.md", "/user_prompt.md", "/llm_prompt.md"]) {
+    if (task.summaryPath.endsWith(filename)) {
+      return task.summaryPath.slice(0, -filename.length);
+    }
+  }
+  return task.summaryPath;
 }
 
 function SessionView({
   session,
   busy,
   onAnalyze,
+  onOpenSession,
 }: {
   session: SessionRecord;
   busy: string | null;
   onAnalyze: () => void;
+  onOpenSession: (sessionId: string) => void;
 }) {
+  const [memory, setMemory] = useState<SessionMemoryDetail | null>(null);
+  const [memoryError, setMemoryError] = useState("");
+
+  useEffect(() => {
+    setMemory(null);
+    setMemoryError("");
+    void getSessionMemory(session.sessionId)
+      .then(setMemory)
+      .catch((error) => setMemoryError(error instanceof Error ? error.message : String(error)));
+  }, [session.sessionId]);
+
   return (
     <section className="detail-stack">
       <div className="panel wide">
@@ -929,27 +1008,347 @@ function SessionView({
         <div className="session-paths">
           <ProjectPath label="Original Path" value={session.rawPath} />
           <ProjectPath label="System Path" value={session.summaryPath ?? "Not generated yet."} />
+          <ProjectPath label="Memory Path" value={memory?.memoryPath ?? "Not generated yet."} />
         </div>
       </div>
-      <MarkdownPanel title="Markdown" path={session.summaryPath} empty="Session markdown has not been written yet." />
+      <MarkdownPanel title="Summary" path={session.summaryPath} empty="Session summary has not been written yet." />
+      <SessionMemoryPanel
+        detail={memory}
+        error={memoryError}
+        currentSessionId={session.sessionId}
+        currentSessionTitle={session.title ?? session.sessionId}
+        onOpenSession={onOpenSession}
+      />
     </section>
   );
 }
 
-function MemoryView({ state }: { state: AppState }) {
+function SessionMemoryPanel({
+  detail,
+  error,
+  currentSessionId,
+  currentSessionTitle,
+  onOpenSession,
+}: {
+  detail: SessionMemoryDetail | null;
+  error: string;
+  currentSessionId: string;
+  currentSessionTitle: string;
+  onOpenSession: (sessionId: string) => void;
+}) {
   return (
-    <section className="detail-layout">
-      <div className="panel wide">
-        <h2>Memories</h2>
-        <p>Project and system memories are reserved for the next milestone group.</p>
-      </div>
-      {state.projects.map((project) => (
-        <div className="panel" key={project.slug}>
-          <h3>{project.displayTitle}</h3>
-          <p>{project.progressPath ?? "No project progress yet."}</p>
+    <div className="panel memory-panel">
+      <h3>Memory</h3>
+      {error && <p className="empty-line">{error}</p>}
+      {detail ? (
+        <>
+          <MemoryGraph
+            detail={detail}
+            currentSessionId={currentSessionId}
+            currentSessionTitle={currentSessionTitle}
+            onOpenSession={onOpenSession}
+          />
+          <div className="memory-line-grid">
+            {detail.memories.map((line, index) => (
+              <article className="memory-line-card" key={`${index}-${line}`}>
+                <MarkdownContent content={line} />
+              </article>
+            ))}
+            {detail.memories.length === 0 && <EmptyLine text="No memory lines yet." />}
+          </div>
+        </>
+      ) : (
+        <p className="empty-line">Loading memory.</p>
+      )}
+    </div>
+  );
+}
+
+function MemoryGraph({
+  detail,
+  currentSessionId,
+  currentSessionTitle,
+  onOpenSession,
+}: {
+  detail: SessionMemoryDetail;
+  currentSessionId: string;
+  currentSessionTitle: string;
+  onOpenSession: (sessionId: string) => void;
+}) {
+  const graph = useMemo(() => {
+    const related = detail.relatedSessions.slice(0, 8);
+    const entities = Array.from(new Set(related.flatMap((session) => session.sharedEntities))).slice(0, 8);
+    const spread = (index: number, total: number, min: number, max: number) =>
+      total <= 1 ? (min + max) / 2 : min + (index * (max - min)) / (total - 1);
+    const entityWidth = Math.max(360, (entities.length - 1) * 190);
+    const relatedWidth = Math.max(360, (related.length - 1) * 190);
+    const graphWidth = Math.max(entityWidth, relatedWidth);
+    const centerX = graphWidth / 2;
+
+    const nodes: Node[] = [
+      {
+        id: `session:${currentSessionId}`,
+        type: "input",
+        position: { x: centerX - 92, y: 16 },
+        data: {
+          label: <MemoryFlowNode kind="Session" label={currentSessionTitle} active />,
+          nodeKind: "session",
+          sessionId: currentSessionId,
+        },
+        className: "memory-flow-node active",
+      },
+      ...entities.map((entity, index) => ({
+        id: `entity:${entity}`,
+        position: { x: spread(index, entities.length, centerX - entityWidth / 2, centerX + entityWidth / 2) - 92, y: 188 },
+        data: { label: <MemoryFlowNode kind="Entity" label={entity} />, nodeKind: "entity" },
+        className: "memory-flow-node entity",
+      })),
+      ...related.map((session, index) => ({
+        id: `session:${session.sessionId}`,
+        type: "output",
+        position: { x: spread(index, related.length, centerX - relatedWidth / 2, centerX + relatedWidth / 2) - 92, y: 358 },
+        data: {
+          label: <MemoryFlowNode kind="Session" label={session.title} />,
+          nodeKind: "session",
+          sessionId: session.sessionId,
+        },
+        className: "memory-flow-node",
+      })),
+    ];
+    const baseEdge = {
+      markerEnd: { type: MarkerType.ArrowClosed },
+      className: "memory-flow-edge",
+    };
+    const edges: Edge[] = [
+      ...entities.map((entity) => ({
+        ...baseEdge,
+        id: `edge:${currentSessionId}:${entity}`,
+        source: `session:${currentSessionId}`,
+        target: `entity:${entity}`,
+      })),
+      ...related.flatMap((session) =>
+        session.sharedEntities.map((entity) => ({
+          ...baseEdge,
+          id: `edge:${entity}:${session.sessionId}`,
+          source: `entity:${entity}`,
+          target: `session:${session.sessionId}`,
+        })),
+      ),
+    ];
+    return { nodes, edges };
+  }, [currentSessionId, currentSessionTitle, detail.relatedSessions]);
+  const [nodes, setNodes, onNodesChange] = useNodesState(graph.nodes);
+
+  useEffect(() => {
+    setNodes(graph.nodes);
+  }, [graph.nodes, setNodes]);
+
+  return (
+    <div className="memory-graph" aria-label="Related memory graph" data-edge-count={graph.edges.length}>
+      <ReactFlow
+        nodes={nodes}
+        edges={graph.edges}
+        onNodesChange={onNodesChange}
+        onNodeClick={(_, node) => {
+          if (node.data.nodeKind !== "session" || typeof node.data.sessionId !== "string") return;
+          onOpenSession(node.data.sessionId);
+        }}
+        fitView
+        fitViewOptions={{ padding: 0.2 }}
+        minZoom={0.35}
+        maxZoom={1.8}
+        nodesDraggable
+        nodesConnectable={false}
+        proOptions={{ hideAttribution: true }}
+      >
+        <Background gap={32} color="rgba(116, 255, 241, 0.18)" />
+        <Controls position="bottom-right" showInteractive={false} />
+      </ReactFlow>
+    </div>
+  );
+}
+
+function MemoryFlowNode({ kind, label, active = false }: { kind: string; label: string; active?: boolean }) {
+  return (
+    <div className={`memory-flow-node-inner ${active ? "active" : ""}`}>
+      <span>{kind}</span>
+      <strong>{label}</strong>
+    </div>
+  );
+}
+
+function MemoryView({
+  jobs,
+  sessions,
+  onOpenSession,
+  onSearch,
+}: {
+  jobs: AppState["jobs"];
+  sessions: SessionRecord[];
+  onOpenSession: (sessionId: string) => void;
+  onSearch: (query: string) => Promise<void>;
+}) {
+  const [query, setQuery] = useState("");
+  const [latestSearch, setLatestSearch] = useState<MemorySearchRecord | null>(null);
+  const [entities, setEntities] = useState<MemoryEntityRecord[]>([]);
+  const [expandedEntity, setExpandedEntity] = useState<string | null>(null);
+  const [entitySessions, setEntitySessions] = useState<Record<string, MemoryRelatedSession[]>>({});
+  const [loadingEntity, setLoadingEntity] = useState<string | null>(null);
+  const [error, setError] = useState("");
+
+  const refreshMemoryData = () => {
+    setError("");
+    void getMemorySearch()
+      .then(setLatestSearch)
+      .catch((error) => setError(error instanceof Error ? error.message : String(error)));
+    void listMemoryEntities()
+      .then(setEntities)
+      .catch((error) => setError(error instanceof Error ? error.message : String(error)));
+  };
+
+  useEffect(() => {
+    refreshMemoryData();
+  }, []);
+
+  useEffect(() => {
+    refreshMemoryData();
+  }, [jobs]);
+
+  const submitSearch = () => {
+    const trimmed = query.trim();
+    if (!trimmed) return;
+    setQuery("");
+    void onSearch(trimmed).then(refreshMemoryData);
+  };
+
+  const toggleEntity = (entity: string) => {
+    setExpandedEntity((current) => (current === entity ? null : entity));
+    if (entitySessions[entity]) return;
+    setLoadingEntity(entity);
+    void listEntitySessions(entity)
+      .then((sessions) => setEntitySessions((current) => ({ ...current, [entity]: sessions })))
+      .catch((error) => setError(error instanceof Error ? error.message : String(error)))
+      .finally(() => setLoadingEntity((current) => (current === entity ? null : current)));
+  };
+
+  return (
+    <section className="detail-stack">
+      <div className="panel memory-search-panel">
+        <PanelTitle title="Memory Search" />
+        <div className="memory-search-row">
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") submitSearch();
+            }}
+            placeholder="Search memory by topic or entity"
+          />
+          <button
+            aria-label="Send memory search"
+            className="icon-button icon-only"
+            disabled={!query.trim()}
+            onClick={submitSearch}
+          >
+            <Send size={16} />
+          </button>
         </div>
-      ))}
+        {error && <p className="empty-line">{error}</p>}
+        {latestSearch && (
+          <div className="memory-search-meta">
+            <span>{latestSearch.query}</span>
+            <small>{latestSearch.status}</small>
+            <small>{latestSearch.message}</small>
+          </div>
+        )}
+        <div className="memory-results">
+          {latestSearch?.results.map((result) => (
+            <button
+              key={`${result.sourceSession}-${result.ordinal}`}
+              className="memory-result-card"
+              onClick={() => onOpenSession(result.sourceSession)}
+            >
+              <strong>{result.sessionTitle}</strong>
+              <small>{result.projectSlug}</small>
+              <MarkdownContent content={result.memory} />
+            </button>
+          ))}
+          {latestSearch && latestSearch.results.length === 0 && <EmptyLine text="No matching memories yet." />}
+          {!latestSearch && <EmptyLine text="Search results will appear here." />}
+        </div>
+      </div>
+
+      <div className="panel memory-entity-panel">
+        <PanelTitle title="Entities" />
+        <div className="list-page data-table entity-table" role="table">
+          <div className="table-header" role="row">
+            <span role="columnheader">Entity</span>
+            <span role="columnheader">Related Sessions</span>
+            <span role="columnheader">Created</span>
+          </div>
+          {entities.map((entity) => (
+            <div key={`${entity.entity}-${entityDisplayName(entity)}`} className="entity-row-group">
+              <button className="list-row" onClick={() => toggleEntity(entityDisplayName(entity))}>
+                <strong>{entityDisplayName(entity)}</strong>
+                <span>{entity.sessionCount}</span>
+                <small>{entity.createdAt}</small>
+              </button>
+              {expandedEntity === entityDisplayName(entity) && (
+                <div className="entity-sessions sessions-table">
+                  {(entitySessions[entityDisplayName(entity)] ?? []).map((session) => (
+                    <EntitySessionRow
+                      key={session.sessionId}
+                      relatedSession={session}
+                      session={sessions.find((item) => item.sessionId === session.sessionId) ?? null}
+                      onOpen={onOpenSession}
+                    />
+                  ))}
+                  {loadingEntity === entityDisplayName(entity) && <EmptyLine text="Loading related sessions." />}
+                  {loadingEntity !== entityDisplayName(entity) && (entitySessions[entityDisplayName(entity)] ?? []).length === 0 && (
+                    <EmptyLine text="No related sessions yet." />
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+          {entities.length === 0 && <EmptyLine text="No entities yet. Refresh memories to build the graph." />}
+        </div>
+      </div>
     </section>
+  );
+}
+
+type AnalyzeRange = "3days" | "7days" | "30days" | "All";
+
+function updatedAfterForAnalyzeRange(range: AnalyzeRange) {
+  if (range === "All") return undefined;
+  const days = Number(range.replace("days", ""));
+  return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+}
+
+function entityDisplayName(entity: MemoryEntityRecord) {
+  return entity.canonicalName || entity.entity;
+}
+
+function EntitySessionRow({
+  relatedSession,
+  session,
+  onOpen,
+}: {
+  relatedSession: MemoryRelatedSession;
+  session: SessionRecord | null;
+  onOpen: (sessionId: string) => void;
+}) {
+  return (
+    <button className="list-row" onClick={() => onOpen(relatedSession.sessionId)}>
+      <strong>{session?.title ?? relatedSession.title}</strong>
+      <span>{session?.rawPath ?? relatedSession.sharedEntities.join(", ")}</span>
+      <span>{session?.projectSlug ?? relatedSession.projectSlug}</span>
+      <span>{session?.taskSlug ?? "unassigned"}</span>
+      <small>{session?.source ?? "memory"}</small>
+      <small>{session?.status ?? "analyzed"}</small>
+      <small>{session ? compactAgeLabel(session.updatedAt || session.createdAt) : ""}</small>
+    </button>
   );
 }
 
@@ -960,6 +1359,7 @@ function SettingsView({
   onResetSessions,
   onResetProjects,
   onResetTasks,
+  onResetMemories,
 }: {
   state: AppState;
   busy: string | null;
@@ -967,53 +1367,210 @@ function SettingsView({
   onResetSessions: () => void;
   onResetProjects: () => void;
   onResetTasks: () => void;
+  onResetMemories: () => void;
 }) {
-  const [settings, setSettings] = useState(state.llmSettings);
+  const [settings, setSettings] = useState(() => normalizeLlmSettings(state.llmSettings));
+  const [draftModel, setDraftModel] = useState<LlmModelSettings>(() =>
+    initialDraftModel(normalizeLlmSettings(state.llmSettings)),
+  );
+  const [editingModelId, setEditingModelId] = useState(draftModel.id);
+
+  useEffect(() => {
+    const normalized = normalizeLlmSettings(state.llmSettings);
+    const model = initialDraftModel(normalized);
+    setSettings(normalized);
+    setDraftModel(model);
+    setEditingModelId(model.id);
+  }, [state.llmSettings]);
+
+  const providerOptions = state.providerPresets.some((preset) => preset.provider === draftModel.provider)
+    ? state.providerPresets
+    : [
+        {
+          provider: draftModel.provider,
+          baseUrl: draftModel.baseUrl,
+          interface: draftModel.interface,
+        },
+        ...state.providerPresets,
+      ];
+  const canSaveModel = Boolean(draftModel.provider.trim() && draftModel.remark.trim());
+  const updateScenarioModel = (key: keyof LlmSettings["scenarioModels"], value: string) => {
+    setSettings((current) => ({
+      ...current,
+      scenarioModels: {
+        ...current.scenarioModels,
+        [key]: value,
+      },
+    }));
+  };
+  const saveModel = () => {
+    if (!canSaveModel) return;
+    const nextModel = {
+      ...draftModel,
+      id: llmModelId(draftModel.provider, draftModel.remark),
+      provider: draftModel.provider.trim(),
+      remark: draftModel.remark.trim(),
+      baseUrl: draftModel.baseUrl.trim(),
+      interface: draftModel.interface.trim() || "openai",
+      model: draftModel.model.trim(),
+      apiKey: draftModel.apiKey.trim(),
+    };
+    const nextModels = upsertLlmModel(settings.models, editingModelId, nextModel);
+    const nextScenarioModels = rewriteScenarioModelIds(settings.scenarioModels, editingModelId, nextModel.id);
+    if (!nextScenarioModels.defaultModel) {
+      nextScenarioModels.defaultModel = nextModel.id;
+    }
+    const defaultModel = nextModels.find((model) => model.id === nextScenarioModels.defaultModel) ?? nextModel;
+    const nextSettings = {
+      ...settings,
+      ...llmModelFields(defaultModel),
+      maxContext: Math.max(0, Math.round(settings.maxContext || 0)),
+      maxTokens: Math.max(0, Math.round(settings.maxTokens || 0)),
+      temperature: Number.isFinite(settings.temperature) ? settings.temperature : 0.2,
+      models: nextModels,
+      scenarioModels: nextScenarioModels,
+    };
+    setSettings(nextSettings);
+    setDraftModel(nextModel);
+    setEditingModelId(nextModel.id);
+    onSave(nextSettings);
+  };
+
   return (
     <section className="settings-grid">
-      <div className="panel wide">
+      <div className="panel wide llm-provider-panel">
         <h2>LLM Provider</h2>
-        <label>
-          Provider preset
-          <select
-            value={settings.provider}
-            onChange={(event) => {
-              const preset = state.providerPresets.find((item) => item.provider === event.target.value);
-              if (preset) {
-                setSettings({ ...settings, provider: preset.provider, baseUrl: preset.baseUrl, interface: preset.interface });
-              }
-            }}
-          >
-            {state.providerPresets.map((preset) => (
-              <option key={preset.provider} value={preset.provider}>{preset.provider}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Interface
-          <input value={settings.interface} onChange={(event) => setSettings({ ...settings, interface: event.target.value })} />
-        </label>
-        <label>
-          Base URL
-          <input value={settings.baseUrl} onChange={(event) => setSettings({ ...settings, baseUrl: event.target.value })} />
-        </label>
-        <label>
-          Model
-          <input value={settings.model} onChange={(event) => setSettings({ ...settings, model: event.target.value })} />
-        </label>
-        <label>
-          API Key
-          <input type="password" value={settings.apiKey} onChange={(event) => setSettings({ ...settings, apiKey: event.target.value })} />
-        </label>
-        <IconButton label="Save Settings" icon={<CheckCircle2 size={16} />} onClick={() => onSave(settings)} />
+        <div className="llm-provider-grid">
+          <div className="llm-provider-left">
+            <h3>Saved Models</h3>
+            <div className="llm-model-list">
+              {settings.models.map((model) => (
+                <button
+                  key={model.id}
+                  className={`llm-model-row ${editingModelId === model.id ? "active" : ""}`}
+                  onClick={() => {
+                    setDraftModel(model);
+                    setEditingModelId(model.id);
+                  }}
+                >
+                  <strong>{model.provider}</strong>
+                  <span>{model.remark}</span>
+                </button>
+              ))}
+              {settings.models.length === 0 && <p className="empty-line">No saved models yet.</p>}
+            </div>
+            <div className="llm-scenarios">
+              <h3>Use Model For</h3>
+              <ScenarioSelect
+                label="Default model"
+                value={settings.scenarioModels.defaultModel}
+                models={settings.models}
+                required
+                onChange={(value) => updateScenarioModel("defaultModel", value)}
+              />
+              <ScenarioSelect
+                label="Project model"
+                value={settings.scenarioModels.projectModel}
+                models={settings.models}
+                onChange={(value) => updateScenarioModel("projectModel", value)}
+              />
+              <ScenarioSelect
+                label="Session model"
+                value={settings.scenarioModels.sessionModel}
+                models={settings.models}
+                onChange={(value) => updateScenarioModel("sessionModel", value)}
+              />
+              <ScenarioSelect
+                label="Memory model"
+                value={settings.scenarioModels.memoryModel}
+                models={settings.models}
+                onChange={(value) => updateScenarioModel("memoryModel", value)}
+              />
+              <ScenarioSelect
+                label="Task model"
+                value={settings.scenarioModels.taskModel}
+                models={settings.models}
+                onChange={(value) => updateScenarioModel("taskModel", value)}
+              />
+            </div>
+          </div>
+          <div className="llm-provider-right">
+            <label className="settings-form-row">
+              <span>Provider</span>
+              <select
+                aria-label="Provider"
+                value={draftModel.provider}
+                onChange={(event) => {
+                  const preset = state.providerPresets.find((item) => item.provider === event.target.value);
+                  setDraftModel((current) => preset
+                    ? { ...current, provider: preset.provider, baseUrl: preset.baseUrl, interface: preset.interface }
+                    : { ...current, provider: event.target.value });
+                }}
+              >
+                {providerOptions.map((preset) => (
+                  <option key={preset.provider} value={preset.provider}>{preset.provider}</option>
+                ))}
+              </select>
+            </label>
+            <label className="settings-form-row">
+              <span>Remark</span>
+              <input
+                required
+                value={draftModel.remark}
+                onChange={(event) => setDraftModel({ ...draftModel, remark: event.target.value })}
+              />
+            </label>
+            <label className="settings-form-row">
+              <span>Interface</span>
+              <input value={draftModel.interface} onChange={(event) => setDraftModel({ ...draftModel, interface: event.target.value })} />
+            </label>
+            <label className="settings-form-row">
+              <span>Base URL</span>
+              <input value={draftModel.baseUrl} onChange={(event) => setDraftModel({ ...draftModel, baseUrl: event.target.value })} />
+            </label>
+            <label className="settings-form-row">
+              <span>Model</span>
+              <input value={draftModel.model} onChange={(event) => setDraftModel({ ...draftModel, model: event.target.value })} />
+            </label>
+            <label className="settings-form-row">
+              <span>API Key</span>
+              <input type="password" value={draftModel.apiKey} onChange={(event) => setDraftModel({ ...draftModel, apiKey: event.target.value })} />
+            </label>
+            <IconButton label="Save Model" icon={<CheckCircle2 size={16} />} onClick={saveModel} disabled={!canSaveModel} />
+          </div>
+        </div>
       </div>
       <div className="panel">
-        <h3>Session Sources</h3>
-        {state.sourceStatuses.map((source) => (
-          <p key={source.source} className={source.exists ? "ok" : "warn"}>
-            {source.source}: {source.path}
-          </p>
-        ))}
+        <h3>LLM Global Settings</h3>
+        <label className="settings-form-row compact">
+          <span>Max Context</span>
+          <input
+            type="number"
+            min={0}
+            value={settings.maxContext}
+            onChange={(event) => setSettings({ ...settings, maxContext: event.currentTarget.valueAsNumber || 0 })}
+          />
+        </label>
+        <label className="settings-form-row compact">
+          <span>Max Tokens</span>
+          <input
+            type="number"
+            min={0}
+            value={settings.maxTokens}
+            onChange={(event) => setSettings({ ...settings, maxTokens: event.currentTarget.valueAsNumber || 0 })}
+          />
+        </label>
+        <label className="settings-form-row compact">
+          <span>Temperature</span>
+          <input
+            type="number"
+            min={0}
+            max={2}
+            step={0.01}
+            value={settings.temperature}
+            onChange={(event) => setSettings({ ...settings, temperature: event.currentTarget.valueAsNumber || 0 })}
+          />
+        </label>
       </div>
       <div className="panel">
         <h3>Reset State</h3>
@@ -1021,10 +1578,124 @@ function SettingsView({
           <IconButton label="Reset Sessions" icon={<RefreshCw size={16} />} onClick={onResetSessions} busy={busy === "Reset sessions"} />
           <IconButton label="Reset Projects" icon={<RefreshCw size={16} />} onClick={onResetProjects} busy={busy === "Reset projects"} />
           <IconButton label="Reset Tasks" icon={<RefreshCw size={16} />} onClick={onResetTasks} busy={busy === "Reset tasks"} />
+          <IconButton label="Reset Memories" icon={<RefreshCw size={16} />} onClick={onResetMemories} busy={busy === "Reset memories"} />
         </div>
       </div>
     </section>
   );
+}
+
+function ScenarioSelect({
+  label,
+  value,
+  models,
+  required = false,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  models: LlmModelSettings[];
+  required?: boolean;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label>
+      {label}
+      <select
+        aria-label={label}
+        value={value}
+        required={required}
+        disabled={models.length === 0}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        {!required && <option value="">Default fallback</option>}
+        {required && <option value="">Select model</option>}
+        {models.map((model) => (
+          <option key={model.id} value={model.id}>{model.provider} {model.remark}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function normalizeLlmSettings(settings: LlmSettings): LlmSettings {
+  const models = settings.models?.length ? settings.models : legacyLlmModel(settings);
+  const scenarioModels = {
+    defaultModel: settings.scenarioModels?.defaultModel || models[0]?.id || "",
+    projectModel: settings.scenarioModels?.projectModel || "",
+    sessionModel: settings.scenarioModels?.sessionModel || "",
+    memoryModel: settings.scenarioModels?.memoryModel || "",
+    taskModel: settings.scenarioModels?.taskModel || "",
+  };
+  const activeModel = models.find((model) => model.id === scenarioModels.defaultModel) ?? models[0];
+  return {
+    ...settings,
+    ...llmModelFields(activeModel ?? modelFromSettings(settings)),
+    maxContext: settings.maxContext ?? 128000,
+    maxTokens: settings.maxTokens ?? 4096,
+    temperature: settings.temperature ?? 0.2,
+    models,
+    scenarioModels,
+  };
+}
+
+function initialDraftModel(settings: LlmSettings) {
+  return settings.models.find((model) => model.id === settings.scenarioModels.defaultModel)
+    ?? settings.models[0]
+    ?? modelFromSettings(settings);
+}
+
+function legacyLlmModel(settings: LlmSettings): LlmModelSettings[] {
+  if (!settings.model && !settings.apiKey) return [];
+  return [modelFromSettings(settings)];
+}
+
+function modelFromSettings(settings: LlmSettings): LlmModelSettings {
+  const remark = settings.remark || "Default";
+  return {
+    id: settings.id || llmModelId(settings.provider, remark),
+    provider: settings.provider,
+    remark,
+    baseUrl: settings.baseUrl,
+    interface: settings.interface,
+    model: settings.model,
+    apiKey: settings.apiKey,
+  };
+}
+
+function llmModelFields(model: LlmModelSettings) {
+  return {
+    id: model.id,
+    provider: model.provider,
+    remark: model.remark,
+    baseUrl: model.baseUrl,
+    interface: model.interface,
+    model: model.model,
+    apiKey: model.apiKey,
+  };
+}
+
+function upsertLlmModel(models: LlmModelSettings[], editingModelId: string, nextModel: LlmModelSettings) {
+  const withoutCurrent = models.filter((model) => model.id !== editingModelId && model.id !== nextModel.id);
+  return [...withoutCurrent, nextModel];
+}
+
+function rewriteScenarioModelIds(
+  scenarioModels: LlmSettings["scenarioModels"],
+  oldModelId: string,
+  nextModelId: string,
+) {
+  return {
+    defaultModel: scenarioModels.defaultModel === oldModelId ? nextModelId : scenarioModels.defaultModel,
+    projectModel: scenarioModels.projectModel === oldModelId ? nextModelId : scenarioModels.projectModel,
+    sessionModel: scenarioModels.sessionModel === oldModelId ? nextModelId : scenarioModels.sessionModel,
+    memoryModel: scenarioModels.memoryModel === oldModelId ? nextModelId : scenarioModels.memoryModel,
+    taskModel: scenarioModels.taskModel === oldModelId ? nextModelId : scenarioModels.taskModel,
+  };
+}
+
+function llmModelId(provider: string, remark: string) {
+  return `${provider.trim().toLowerCase().replace(/\s+/g, "-")}-${remark.trim().toLowerCase().replace(/\s+/g, "-")}`;
 }
 
 function Metric({ icon, label, value, detail }: { icon: React.ReactNode; label: string; value: number; detail: string }) {

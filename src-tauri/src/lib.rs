@@ -3,8 +3,10 @@ pub mod commands;
 pub mod config;
 pub mod db;
 pub mod errors;
+pub mod graph;
 pub mod llm;
 pub mod markdown;
+pub mod memory;
 pub mod models;
 pub mod presets;
 pub mod scanner;
@@ -46,6 +48,12 @@ pub fn run() {
             commands::enqueue_analyze_project,
             commands::enqueue_analyze_session,
             commands::enqueue_review_project,
+            commands::enqueue_rebuild_memories,
+            commands::enqueue_search_memories,
+            commands::get_memory_search,
+            commands::get_session_memory,
+            commands::list_memory_entities,
+            commands::list_entity_sessions,
             commands::get_active_jobs,
             commands::stop_job,
             commands::read_markdown_file,
@@ -55,7 +63,9 @@ pub fn run() {
             commands::delete_task,
             commands::reset_sessions,
             commands::reset_projects,
-            commands::reset_tasks
+            commands::reset_tasks,
+            commands::reset_memories,
+            commands::rebuild_memories
         ])
         .run(tauri::generate_context!())
         .expect("error while running KittyNest");

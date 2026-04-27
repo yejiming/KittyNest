@@ -1,9 +1,12 @@
 use rusqlite::{params, OptionalExtension};
 
 use crate::models::{
-    AppPaths, DashboardStats, EnqueueJobResult, JobRecord, ProjectRecord, ProjectSessionSummary,
-    RawMessage, RawSession, SessionRecord, StoredSession, TaskRecord,
+    AppPaths, DashboardStats, EnqueueJobResult, JobRecord, MemorySearchRecord,
+    MemorySearchResultRecord, ProjectRecord, ProjectSessionSummary, RawMessage, RawSession,
+    SessionRecord, StoredSession, TaskRecord,
 };
+
+pub const PROJECT_ANALYZE_SESSION_LIMIT: usize = 20;
 
 pub fn open(paths: &AppPaths) -> anyhow::Result<rusqlite::Connection> {
     std::fs::create_dir_all(&paths.data_dir)?;
@@ -23,6 +26,7 @@ pub fn migrate(connection: &rusqlite::Connection) -> anyhow::Result<()> {
           sources TEXT NOT NULL DEFAULT '',
           info_path TEXT,
           progress_path TEXT,
+          user_preference_path TEXT,
           review_status TEXT NOT NULL DEFAULT 'not_reviewed',
           last_reviewed_at TEXT,
           last_session_at TEXT,
@@ -78,6 +82,36 @@ pub fn migrate(connection: &rusqlite::Connection) -> anyhow::Result<()> {
           updated_at TEXT NOT NULL DEFAULT '',
           completed_at TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS session_memories (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_row_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+          source_session TEXT NOT NULL,
+          project_slug TEXT NOT NULL,
+          memory TEXT NOT NULL,
+          ordinal INTEGER NOT NULL,
+          created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS memory_searches (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+          query TEXT NOT NULL,
+          status TEXT NOT NULL,
+          message TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS memory_search_results (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          search_id INTEGER NOT NULL REFERENCES memory_searches(id) ON DELETE CASCADE,
+          source_session TEXT NOT NULL,
+          session_title TEXT NOT NULL,
+          project_slug TEXT NOT NULL,
+          memory TEXT NOT NULL,
+          ordinal INTEGER NOT NULL
+        );
         "#,
     )?;
     add_column_if_missing(
@@ -126,6 +160,24 @@ pub fn migrate(connection: &rusqlite::Connection) -> anyhow::Result<()> {
         "analysis_error TEXT",
     )?;
     add_column_if_missing(connection, "jobs", "updated_after", "updated_after TEXT")?;
+    add_column_if_missing(
+        connection,
+        "projects",
+        "user_preference_path",
+        "user_preference_path TEXT",
+    )?;
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_session_memories_source_session ON session_memories(source_session, ordinal)",
+        [],
+    )?;
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_searches_job_id ON memory_searches(job_id)",
+        [],
+    )?;
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_search_results_search_id ON memory_search_results(search_id, ordinal)",
+        [],
+    )?;
     connection.execute(
         "UPDATE sessions SET analysis_status = 'analyzed' WHERE processed_at IS NOT NULL AND analysis_status = 'pending'",
         [],
@@ -310,7 +362,7 @@ fn unique_project_slug(
 pub fn list_projects(connection: &rusqlite::Connection) -> anyhow::Result<Vec<ProjectRecord>> {
     let mut statement = connection.prepare(
         r#"
-        SELECT slug, display_title, workdir, sources, info_path, progress_path,
+        SELECT slug, display_title, workdir, sources, info_path, progress_path, user_preference_path,
                review_status, last_reviewed_at, last_session_at
         FROM projects
         ORDER BY COALESCE(last_session_at, updated_at) DESC, display_title ASC
@@ -325,9 +377,10 @@ pub fn list_projects(connection: &rusqlite::Connection) -> anyhow::Result<Vec<Pr
             sources: split_sources(&sources),
             info_path: row.get(4)?,
             progress_path: row.get(5)?,
-            review_status: row.get(6)?,
-            last_reviewed_at: row.get(7)?,
-            last_session_at: row.get(8)?,
+            user_preference_path: row.get(6)?,
+            review_status: row.get(7)?,
+            last_reviewed_at: row.get(8)?,
+            last_session_at: row.get(9)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -340,7 +393,7 @@ pub fn get_project_by_slug(
     connection
         .query_row(
             r#"
-            SELECT id, slug, display_title, workdir, sources, info_path, progress_path,
+            SELECT id, slug, display_title, workdir, sources, info_path, progress_path, user_preference_path,
                    review_status, last_reviewed_at, last_session_at
             FROM projects
             WHERE slug = ?1
@@ -357,9 +410,10 @@ pub fn get_project_by_slug(
                         sources: split_sources(&sources),
                         info_path: row.get(5)?,
                         progress_path: row.get(6)?,
-                        review_status: row.get(7)?,
-                        last_reviewed_at: row.get(8)?,
-                        last_session_at: row.get(9)?,
+                        user_preference_path: row.get(7)?,
+                        review_status: row.get(8)?,
+                        last_reviewed_at: row.get(9)?,
+                        last_session_at: row.get(10)?,
                     },
                 ))
             },
@@ -439,12 +493,13 @@ pub fn dashboard_stats(connection: &rusqlite::Connection) -> anyhow::Result<Dash
         connection,
         "SELECT COUNT(*) FROM sessions WHERE analysis_status = 'pending'",
     )?;
+    let memories = count(connection, "SELECT COUNT(*) FROM session_memories")?;
     Ok(DashboardStats {
         active_projects,
         open_tasks,
         sessions,
         unprocessed_sessions,
-        memories: 0,
+        memories,
     })
 }
 
@@ -496,7 +551,7 @@ pub fn enqueue_analyze_project(
     project_slug: &str,
 ) -> anyhow::Result<EnqueueJobResult> {
     let pending = count_project_sessions_needing_analysis(connection, project_slug)?;
-    let total = pending.min(20) + 2;
+    let total = pending + 3;
     enqueue_job(
         connection,
         "analyze_project",
@@ -582,6 +637,44 @@ pub fn enqueue_generate_task_prompt(
         None,
         1,
     )
+}
+
+pub fn enqueue_rebuild_memories(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<EnqueueJobResult> {
+    let total = count_memory_rebuild_sessions(connection)? + 1;
+    enqueue_job(
+        connection,
+        "rebuild_memories",
+        "memory_rebuild",
+        None,
+        None,
+        None,
+        None,
+        total,
+    )
+}
+
+pub fn enqueue_search_memories(
+    connection: &rusqlite::Connection,
+    query: &str,
+) -> anyhow::Result<EnqueueJobResult> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("memory search query cannot be empty");
+    }
+    let job = enqueue_job(
+        connection,
+        "search_memories",
+        "memory_search",
+        None,
+        None,
+        None,
+        None,
+        1,
+    )?;
+    create_memory_search(connection, job.job_id, trimmed)?;
+    Ok(job)
 }
 
 fn enqueue_job(
@@ -796,7 +889,7 @@ fn job_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRecord> {
 pub fn unprocessed_sessions(
     connection: &rusqlite::Connection,
 ) -> anyhow::Result<Vec<StoredSession>> {
-    stored_sessions_for_where(connection, "s.analysis_status = 'pending'", [])
+    stored_sessions_for_where(connection, "s.analysis_status IN ('pending', 'failed')", [])
 }
 
 pub fn unprocessed_sessions_updated_after(
@@ -805,7 +898,7 @@ pub fn unprocessed_sessions_updated_after(
 ) -> anyhow::Result<Vec<StoredSession>> {
     stored_sessions_for_where(
         connection,
-        "s.analysis_status = 'pending' AND s.updated_at >= ?1",
+        "s.analysis_status IN ('pending', 'failed') AND s.updated_at >= ?1",
         params![updated_after],
     )
 }
@@ -830,9 +923,17 @@ pub fn project_sessions_needing_analysis_limited(
         r#"
         SELECT s.id, s.source, s.session_id, s.project_id, p.slug, s.task_id, s.workdir,
                s.created_at, s.updated_at, s.messages_json
-        FROM sessions s
+        FROM (
+          SELECT s.id, s.source, s.session_id, s.project_id, s.task_id, s.workdir,
+                 s.created_at, s.updated_at, s.messages_json, s.analysis_status
+          FROM sessions s
+          JOIN projects p ON p.id = s.project_id
+          WHERE p.slug = ?1
+          ORDER BY s.updated_at DESC, s.created_at DESC, s.id DESC
+          LIMIT {limit}
+        ) s
         JOIN projects p ON p.id = s.project_id
-        WHERE s.analysis_status IN ('pending', 'failed') AND p.slug = ?1
+        WHERE s.analysis_status IN ('pending', 'failed')
         ORDER BY s.updated_at DESC, s.created_at DESC, s.id DESC
         LIMIT {limit}
         "#
@@ -868,18 +969,26 @@ pub fn session_is_unprocessed(
 pub fn analyzed_session_summaries_by_project_slug(
     connection: &rusqlite::Connection,
     project_slug: &str,
+    limit: usize,
 ) -> anyhow::Result<Vec<ProjectSessionSummary>> {
-    let mut statement = connection.prepare(
+    let sql = format!(
         r#"
         SELECT s.session_id, COALESCE(s.title, s.session_id), COALESCE(s.summary, ''),
                t.slug, s.created_at, s.updated_at
-        FROM sessions s
-        JOIN projects p ON p.id = s.project_id
+        FROM (
+          SELECT s.id, s.session_id, s.title, s.summary, s.task_id, s.created_at, s.updated_at, s.analysis_status
+          FROM sessions s
+          JOIN projects p ON p.id = s.project_id
+          WHERE p.slug = ?1
+          ORDER BY s.updated_at DESC, s.created_at DESC, s.id DESC
+          LIMIT {limit}
+        ) s
         LEFT JOIN tasks t ON t.id = s.task_id
-        WHERE p.slug = ?1 AND s.analysis_status = 'analyzed'
+        WHERE s.analysis_status = 'analyzed'
         ORDER BY s.created_at ASC, s.updated_at ASC, s.id ASC
-        "#,
-    )?;
+        "#
+    );
+    let mut statement = connection.prepare(&sql)?;
     let rows = statement.query_map(params![project_slug], |row| {
         Ok(ProjectSessionSummary {
             session_id: row.get(0)?,
@@ -890,6 +999,45 @@ pub fn analyzed_session_summaries_by_project_slug(
             updated_at: row.get(5)?,
         })
     })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+pub fn analyzed_sessions(connection: &rusqlite::Connection) -> anyhow::Result<Vec<StoredSession>> {
+    stored_sessions_for_where(connection, "s.analysis_status = 'analyzed'", [])
+}
+
+pub fn sessions_needing_memory_rebuild(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<Vec<StoredSession>> {
+    stored_sessions_for_where(
+        connection,
+        r#"
+        s.analysis_status = 'analyzed'
+        AND s.processed_at IS NOT NULL
+        AND COALESCE((SELECT MAX(m.created_at) FROM session_memories m WHERE m.session_row_id = s.id), '1970-01-01T00:00:00Z') < s.processed_at
+        "#,
+        [],
+    )
+}
+
+pub fn project_sessions_by_project_slug(
+    connection: &rusqlite::Connection,
+    project_slug: &str,
+    limit: usize,
+) -> anyhow::Result<Vec<StoredSession>> {
+    let sql = format!(
+        r#"
+        SELECT s.id, s.source, s.session_id, s.project_id, p.slug, s.task_id, s.workdir,
+               s.created_at, s.updated_at, s.messages_json
+        FROM sessions s
+        JOIN projects p ON p.id = s.project_id
+        WHERE p.slug = ?1
+        ORDER BY s.updated_at DESC, s.created_at DESC, s.id DESC
+        LIMIT {limit}
+        "#
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(params![project_slug], stored_session_from_row)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
@@ -1066,6 +1214,26 @@ pub fn mark_session_processed_with_optional_task(
     summary: &str,
     summary_path: &str,
 ) -> anyhow::Result<()> {
+    mark_session_processed_with_optional_task_at(
+        connection,
+        session_id,
+        task_id,
+        title,
+        summary,
+        summary_path,
+        &crate::utils::now_rfc3339(),
+    )
+}
+
+pub fn mark_session_processed_with_optional_task_at(
+    connection: &rusqlite::Connection,
+    session_id: i64,
+    task_id: Option<i64>,
+    title: &str,
+    summary: &str,
+    summary_path: &str,
+    processed_at: &str,
+) -> anyhow::Result<()> {
     connection.execute(
         r#"
         UPDATE sessions
@@ -1078,11 +1246,25 @@ pub fn mark_session_processed_with_optional_task(
             title,
             summary,
             summary_path,
-            crate::utils::now_rfc3339(),
+            processed_at,
             session_id
         ],
     )?;
     Ok(())
+}
+
+pub fn session_processed_at(
+    connection: &rusqlite::Connection,
+    session_id: i64,
+) -> anyhow::Result<Option<String>> {
+    connection
+        .query_row(
+            "SELECT processed_at FROM sessions WHERE id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(Into::into)
 }
 
 pub fn mark_session_failed(
@@ -1103,6 +1285,242 @@ pub fn mark_session_failed(
         WHERE id = ?2
         "#,
         params![error, session_id],
+    )?;
+    Ok(())
+}
+
+pub fn replace_session_memories(
+    connection: &rusqlite::Connection,
+    session: &StoredSession,
+    memories: &[String],
+) -> anyhow::Result<usize> {
+    replace_session_memories_at(connection, session, memories, &crate::utils::now_rfc3339())
+}
+
+pub fn replace_session_memories_at(
+    connection: &rusqlite::Connection,
+    session: &StoredSession,
+    memories: &[String],
+    created_at: &str,
+) -> anyhow::Result<usize> {
+    connection.execute(
+        "DELETE FROM session_memories WHERE session_row_id = ?1",
+        params![session.id],
+    )?;
+    let mut inserted = 0usize;
+    for (index, memory) in memories
+        .iter()
+        .map(|memory| memory.trim())
+        .filter(|memory| !memory.is_empty())
+        .enumerate()
+    {
+        connection.execute(
+            r#"
+            INSERT INTO session_memories
+              (session_row_id, source_session, project_slug, memory, ordinal, created_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+            params![
+                session.id,
+                session.session_id.as_str(),
+                session.project_slug.as_str(),
+                memory,
+                index as i64,
+                created_at
+            ],
+        )?;
+        inserted += 1;
+    }
+    Ok(inserted)
+}
+
+pub fn delete_session_memories(
+    connection: &rusqlite::Connection,
+    session: &StoredSession,
+) -> anyhow::Result<usize> {
+    connection
+        .execute(
+            "DELETE FROM session_memories WHERE session_row_id = ?1 OR source_session = ?2",
+            params![session.id, session.session_id.as_str()],
+        )
+        .map_err(Into::into)
+}
+
+pub fn session_memories_by_session_id(
+    connection: &rusqlite::Connection,
+    session_id: &str,
+) -> anyhow::Result<Vec<String>> {
+    let mut statement = connection.prepare(
+        r#"
+        SELECT memory
+        FROM session_memories
+        WHERE source_session = ?1
+        ORDER BY ordinal ASC, id ASC
+        "#,
+    )?;
+    let rows = statement.query_map(params![session_id], |row| row.get::<_, String>(0))?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+pub fn session_memories_for_sessions(
+    connection: &rusqlite::Connection,
+    session_ids: &[String],
+) -> anyhow::Result<Vec<MemorySearchResultRecord>> {
+    let mut records = Vec::new();
+    let mut statement = connection.prepare(
+        r#"
+        SELECT m.source_session, COALESCE(s.title, m.source_session), m.project_slug, m.memory, m.ordinal
+        FROM session_memories m
+        LEFT JOIN sessions s ON s.id = m.session_row_id
+        WHERE m.source_session = ?1
+        ORDER BY m.source_session ASC, m.ordinal ASC, m.id ASC
+        "#,
+    )?;
+    for session_id in session_ids {
+        let rows = statement.query_map(params![session_id], |row| {
+            let ordinal: i64 = row.get(4)?;
+            Ok(MemorySearchResultRecord {
+                source_session: row.get(0)?,
+                session_title: row.get(1)?,
+                project_slug: row.get(2)?,
+                memory: row.get(3)?,
+                ordinal: ordinal as usize,
+            })
+        })?;
+        for row in rows {
+            records.push(row?);
+        }
+    }
+    Ok(records)
+}
+
+pub fn create_memory_search(
+    connection: &rusqlite::Connection,
+    job_id: i64,
+    query: &str,
+) -> anyhow::Result<i64> {
+    let now = crate::utils::now_rfc3339();
+    connection.execute(
+        r#"
+        INSERT INTO memory_searches (job_id, query, status, message, created_at, updated_at)
+        VALUES (?1, ?2, 'queued', 'Queued for analysis', ?3, ?3)
+        "#,
+        params![job_id, query.trim(), now],
+    )?;
+    Ok(connection.last_insert_rowid())
+}
+
+pub fn memory_search_for_job(
+    connection: &rusqlite::Connection,
+    job_id: i64,
+) -> anyhow::Result<Option<MemorySearchRecord>> {
+    memory_search_for_where(connection, "job_id = ?1", params![job_id])
+}
+
+pub fn latest_memory_search(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<Option<MemorySearchRecord>> {
+    memory_search_for_where(connection, "1 = 1", [])
+}
+
+fn memory_search_for_where<P>(
+    connection: &rusqlite::Connection,
+    where_sql: &str,
+    params: P,
+) -> anyhow::Result<Option<MemorySearchRecord>>
+where
+    P: rusqlite::Params,
+{
+    let sql = format!(
+        r#"
+        SELECT id, job_id, query, status, message, created_at, updated_at
+        FROM memory_searches
+        WHERE {where_sql}
+        ORDER BY updated_at DESC, id DESC
+        LIMIT 1
+        "#
+    );
+    let Some(mut search) = connection
+        .query_row(&sql, params, |row| {
+            Ok(MemorySearchRecord {
+                id: row.get(0)?,
+                job_id: row.get(1)?,
+                query: row.get(2)?,
+                status: row.get(3)?,
+                message: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                results: Vec::new(),
+            })
+        })
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    search.results = memory_search_results(connection, search.id)?;
+    Ok(Some(search))
+}
+
+fn memory_search_results(
+    connection: &rusqlite::Connection,
+    search_id: i64,
+) -> anyhow::Result<Vec<MemorySearchResultRecord>> {
+    let mut statement = connection.prepare(
+        r#"
+        SELECT source_session, session_title, project_slug, memory, ordinal
+        FROM memory_search_results
+        WHERE search_id = ?1
+        ORDER BY ordinal ASC, id ASC
+        "#,
+    )?;
+    let rows = statement.query_map(params![search_id], |row| {
+        let ordinal: i64 = row.get(4)?;
+        Ok(MemorySearchResultRecord {
+            source_session: row.get(0)?,
+            session_title: row.get(1)?,
+            project_slug: row.get(2)?,
+            memory: row.get(3)?,
+            ordinal: ordinal as usize,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+pub fn replace_memory_search_results(
+    connection: &rusqlite::Connection,
+    search_id: i64,
+    status: &str,
+    message: &str,
+    results: &[MemorySearchResultRecord],
+) -> anyhow::Result<()> {
+    connection.execute(
+        "DELETE FROM memory_search_results WHERE search_id = ?1",
+        params![search_id],
+    )?;
+    for (index, result) in results.iter().enumerate() {
+        connection.execute(
+            r#"
+            INSERT INTO memory_search_results
+              (search_id, source_session, session_title, project_slug, memory, ordinal)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+            params![
+                search_id,
+                result.source_session.as_str(),
+                result.session_title.as_str(),
+                result.project_slug.as_str(),
+                result.memory.as_str(),
+                index as i64,
+            ],
+        )?;
+    }
+    connection.execute(
+        r#"
+        UPDATE memory_searches
+        SET status = ?1, message = ?2, updated_at = ?3
+        WHERE id = ?4
+        "#,
+        params![status, message, crate::utils::now_rfc3339(), search_id],
     )?;
     Ok(())
 }
@@ -1132,6 +1550,22 @@ pub fn update_project_progress(
     connection.execute(
         "UPDATE projects SET progress_path = ?1, updated_at = ?2 WHERE slug = ?3",
         params![progress_path, crate::utils::now_rfc3339(), project_slug],
+    )?;
+    Ok(())
+}
+
+pub fn update_project_user_preference(
+    connection: &rusqlite::Connection,
+    project_slug: &str,
+    user_preference_path: &str,
+) -> anyhow::Result<()> {
+    connection.execute(
+        "UPDATE projects SET user_preference_path = ?1, updated_at = ?2 WHERE slug = ?3",
+        params![
+            user_preference_path,
+            crate::utils::now_rfc3339(),
+            project_slug
+        ],
     )?;
     Ok(())
 }
@@ -1219,6 +1653,12 @@ pub fn reset_all_tasks(connection: &rusqlite::Connection) -> anyhow::Result<usiz
         .map_err(Into::into)
 }
 
+pub fn reset_all_memories(connection: &rusqlite::Connection) -> anyhow::Result<usize> {
+    connection
+        .execute("DELETE FROM session_memories", [])
+        .map_err(Into::into)
+}
+
 fn count(connection: &rusqlite::Connection, sql: &str) -> anyhow::Result<usize> {
     let value: i64 = connection.query_row(sql, [], |row| row.get(0))?;
     Ok(value as usize)
@@ -1230,16 +1670,31 @@ fn count_pending_sessions(
 ) -> anyhow::Result<usize> {
     let value: i64 = match updated_after {
         Some(updated_after) => connection.query_row(
-            "SELECT COUNT(*) FROM sessions WHERE analysis_status = 'pending' AND updated_at >= ?1",
+            "SELECT COUNT(*) FROM sessions WHERE analysis_status IN ('pending', 'failed') AND updated_at >= ?1",
             params![updated_after],
             |row| row.get(0),
         )?,
         None => connection.query_row(
-            "SELECT COUNT(*) FROM sessions WHERE analysis_status = 'pending'",
+            "SELECT COUNT(*) FROM sessions WHERE analysis_status IN ('pending', 'failed')",
             [],
             |row| row.get(0),
         )?,
     };
+    Ok(value as usize)
+}
+
+fn count_memory_rebuild_sessions(connection: &rusqlite::Connection) -> anyhow::Result<usize> {
+    let value: i64 = connection.query_row(
+        r#"
+        SELECT COUNT(*)
+        FROM sessions s
+        WHERE s.analysis_status = 'analyzed'
+          AND s.processed_at IS NOT NULL
+          AND COALESCE((SELECT MAX(m.created_at) FROM session_memories m WHERE m.session_row_id = s.id), '1970-01-01T00:00:00Z') < s.processed_at
+        "#,
+        [],
+        |row| row.get(0),
+    )?;
     Ok(value as usize)
 }
 
@@ -1248,12 +1703,21 @@ fn count_project_sessions_needing_analysis(
     project_slug: &str,
 ) -> anyhow::Result<usize> {
     let value: i64 = connection.query_row(
-        r#"
+        &format!(
+            r#"
         SELECT COUNT(*)
-        FROM sessions s
-        JOIN projects p ON p.id = s.project_id
-        WHERE s.analysis_status IN ('pending', 'failed') AND p.slug = ?1
+        FROM (
+          SELECT s.analysis_status
+          FROM sessions s
+          JOIN projects p ON p.id = s.project_id
+          WHERE p.slug = ?1
+          ORDER BY s.updated_at DESC, s.created_at DESC, s.id DESC
+          LIMIT {}
+        ) recent
+        WHERE recent.analysis_status IN ('pending', 'failed')
         "#,
+            PROJECT_ANALYZE_SESSION_LIMIT
+        ),
         params![project_slug],
         |row| row.get(0),
     )?;
@@ -1283,13 +1747,14 @@ mod tests {
         cancel_job, claim_next_job, delete_task_if_empty, enqueue_analyze_project_sessions,
         enqueue_analyze_session, enqueue_analyze_sessions, enqueue_review_project,
         enqueue_scan_sources, list_active_jobs, list_projects, list_sessions, list_tasks,
-        mark_session_processed, mark_stale_running_jobs_queued, migrate, open, reset_all_projects,
-        reset_all_sessions, reset_all_tasks, unprocessed_session_by_session_id,
-        unprocessed_sessions,
-        update_job_progress, update_project_progress, update_project_review, upsert_raw_sessions,
-        upsert_task,
+        mark_session_failed, mark_session_processed, mark_session_processed_with_optional_task,
+        mark_stale_running_jobs_queued, migrate, open, replace_session_memories,
+        reset_all_memories, reset_all_projects, reset_all_sessions, reset_all_tasks,
+        session_memories_by_session_id, unprocessed_session_by_session_id, unprocessed_sessions,
+        unprocessed_sessions_updated_after, update_job_progress, update_project_progress,
+        update_project_review, upsert_raw_sessions, upsert_task,
     };
-    use crate::models::{AppPaths, RawMessage, RawSession};
+    use crate::models::{AppPaths, MemorySearchResultRecord, RawMessage, RawSession};
 
     #[test]
     fn upsert_raw_sessions_deduplicates_by_source_and_session_id() {
@@ -1603,6 +2068,56 @@ mod tests {
     }
 
     #[test]
+    fn enqueue_analyze_project_counts_pending_only_inside_latest_twenty_sessions() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
+        std::fs::create_dir_all(&paths.data_dir).unwrap();
+        let mut connection = open(&paths).unwrap();
+        migrate(&connection).unwrap();
+        let raw_sessions = (1..=22)
+            .map(|index| RawSession {
+                source: "codex".into(),
+                session_id: format!("project-window-{index:02}"),
+                workdir: "/tmp/project-window".into(),
+                created_at: format!("2026-04-26T00:{index:02}:00Z"),
+                updated_at: format!("2026-04-26T00:{index:02}:30Z"),
+                raw_path: format!("/tmp/project-window-{index:02}.jsonl"),
+                messages: vec![RawMessage {
+                    role: "user".into(),
+                    content: format!("Project window session {index:02}"),
+                }],
+            })
+            .collect::<Vec<_>>();
+        upsert_raw_sessions(&mut connection, &raw_sessions).unwrap();
+        let project = list_projects(&connection).unwrap().remove(0);
+        for index in 3..=22 {
+            let stored = unprocessed_session_by_session_id(
+                &connection,
+                &format!("project-window-{index:02}"),
+            )
+            .unwrap()
+            .remove(0);
+            mark_session_processed_with_optional_task(
+                &connection,
+                stored.id,
+                None,
+                &format!("Project Window {index:02}"),
+                "Summary",
+                "/tmp/summary.md",
+            )
+            .unwrap();
+        }
+
+        let result = super::enqueue_analyze_project(&connection, &project.slug).unwrap();
+        let sessions =
+            super::project_sessions_needing_analysis_limited(&connection, &project.slug, 20)
+                .unwrap();
+
+        assert_eq!(result.total, 3);
+        assert!(sessions.is_empty());
+    }
+
+    #[test]
     fn enqueue_review_project_persists_project_job() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
@@ -1649,6 +2164,264 @@ mod tests {
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].kind, "scan_sources");
         assert_eq!(jobs[0].scope, "source_scan");
+    }
+
+    #[test]
+    fn enqueue_rebuild_memories_treats_missing_memory_as_epoch() {
+        let temp = tempfile::tempdir().unwrap();
+        let connection = test_connection_with_session(&temp, "rebuild-db");
+        let stored = unprocessed_session_by_session_id(&connection, "rebuild-db")
+            .unwrap()
+            .remove(0);
+        mark_session_processed_with_optional_task(
+            &connection,
+            stored.id,
+            None,
+            "Rebuild DB",
+            "Summary",
+            "/tmp/rebuild-db/summary.md",
+        )
+        .unwrap();
+
+        let result = super::enqueue_rebuild_memories(&connection).unwrap();
+
+        assert_eq!(result.total, 2);
+    }
+
+    #[test]
+    fn enqueue_rebuild_memories_counts_only_memory_older_than_summary() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
+        std::fs::create_dir_all(&paths.data_dir).unwrap();
+        let mut connection = open(&paths).unwrap();
+        migrate(&connection).unwrap();
+        upsert_raw_sessions(
+            &mut connection,
+            &[
+                RawSession {
+                    source: "codex".into(),
+                    session_id: "fresh-memory".into(),
+                    workdir: "/tmp/memory-refresh".into(),
+                    created_at: "2026-04-27T00:00:00Z".into(),
+                    updated_at: "2026-04-27T00:00:01Z".into(),
+                    raw_path: "/tmp/fresh-memory.jsonl".into(),
+                    messages: vec![RawMessage {
+                        role: "user".into(),
+                        content: "Fresh memory".into(),
+                    }],
+                },
+                RawSession {
+                    source: "codex".into(),
+                    session_id: "stale-memory".into(),
+                    workdir: "/tmp/memory-refresh".into(),
+                    created_at: "2026-04-27T00:00:00Z".into(),
+                    updated_at: "2026-04-27T00:00:02Z".into(),
+                    raw_path: "/tmp/stale-memory.jsonl".into(),
+                    messages: vec![RawMessage {
+                        role: "user".into(),
+                        content: "Stale memory".into(),
+                    }],
+                },
+                RawSession {
+                    source: "codex".into(),
+                    session_id: "future-memory".into(),
+                    workdir: "/tmp/memory-refresh".into(),
+                    created_at: "2026-04-27T00:00:00Z".into(),
+                    updated_at: "2026-04-27T00:00:04Z".into(),
+                    raw_path: "/tmp/future-memory.jsonl".into(),
+                    messages: vec![RawMessage {
+                        role: "user".into(),
+                        content: "Future memory".into(),
+                    }],
+                },
+                RawSession {
+                    source: "codex".into(),
+                    session_id: "missing-memory".into(),
+                    workdir: "/tmp/memory-refresh".into(),
+                    created_at: "2026-04-27T00:00:00Z".into(),
+                    updated_at: "2026-04-27T00:00:03Z".into(),
+                    raw_path: "/tmp/missing-memory.jsonl".into(),
+                    messages: vec![RawMessage {
+                        role: "user".into(),
+                        content: "Missing memory".into(),
+                    }],
+                },
+            ],
+        )
+        .unwrap();
+
+        let fresh = unprocessed_session_by_session_id(&connection, "fresh-memory")
+            .unwrap()
+            .remove(0);
+        mark_session_processed_with_optional_task(
+            &connection,
+            fresh.id,
+            None,
+            "Fresh Memory",
+            "Summary",
+            "/tmp/fresh-memory/summary.md",
+        )
+        .unwrap();
+        replace_session_memories(&connection, &fresh, &["fresh memory".to_string()]).unwrap();
+        connection
+            .execute(
+                "UPDATE sessions SET processed_at = '2026-04-27T10:00:00Z' WHERE id = ?1",
+                rusqlite::params![fresh.id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE session_memories SET created_at = '2026-04-27T10:00:00Z' WHERE session_row_id = ?1",
+                rusqlite::params![fresh.id],
+            )
+            .unwrap();
+
+        let stale = unprocessed_session_by_session_id(&connection, "stale-memory")
+            .unwrap()
+            .remove(0);
+        mark_session_processed_with_optional_task(
+            &connection,
+            stale.id,
+            None,
+            "Stale Memory",
+            "Summary",
+            "/tmp/stale-memory/summary.md",
+        )
+        .unwrap();
+        replace_session_memories(&connection, &stale, &["old memory".to_string()]).unwrap();
+        connection
+            .execute(
+                "UPDATE sessions SET processed_at = '2026-04-27T11:00:00Z' WHERE id = ?1",
+                rusqlite::params![stale.id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE session_memories SET created_at = '2026-04-27T10:30:00Z' WHERE session_row_id = ?1",
+                rusqlite::params![stale.id],
+            )
+            .unwrap();
+
+        let future = unprocessed_session_by_session_id(&connection, "future-memory")
+            .unwrap()
+            .remove(0);
+        mark_session_processed_with_optional_task(
+            &connection,
+            future.id,
+            None,
+            "Future Memory",
+            "Summary",
+            "/tmp/future-memory/summary.md",
+        )
+        .unwrap();
+        replace_session_memories(&connection, &future, &["future memory".to_string()]).unwrap();
+        connection
+            .execute(
+                "UPDATE sessions SET processed_at = '2026-04-27T10:00:00Z' WHERE id = ?1",
+                rusqlite::params![future.id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE session_memories SET created_at = '2026-04-27T10:30:00Z' WHERE session_row_id = ?1",
+                rusqlite::params![future.id],
+            )
+            .unwrap();
+
+        let missing = unprocessed_session_by_session_id(&connection, "missing-memory")
+            .unwrap()
+            .remove(0);
+        mark_session_processed_with_optional_task(
+            &connection,
+            missing.id,
+            None,
+            "Missing Memory",
+            "Summary",
+            "/tmp/missing-memory/summary.md",
+        )
+        .unwrap();
+
+        let result = super::enqueue_rebuild_memories(&connection).unwrap();
+        let sessions = super::sessions_needing_memory_rebuild(&connection).unwrap();
+
+        assert_eq!(result.total, 3);
+        assert_eq!(
+            sessions
+                .into_iter()
+                .map(|session| session.session_id)
+                .collect::<Vec<_>>(),
+            vec!["missing-memory".to_string(), "stale-memory".to_string()]
+        );
+    }
+
+    #[test]
+    fn enqueue_rebuild_memories_includes_entity_disambiguation_when_no_sessions_need_rebuild() {
+        let temp = tempfile::tempdir().unwrap();
+        let connection = test_connection_with_session(&temp, "fresh-rebuild-db");
+        let stored = unprocessed_session_by_session_id(&connection, "fresh-rebuild-db")
+            .unwrap()
+            .remove(0);
+        mark_session_processed_with_optional_task(
+            &connection,
+            stored.id,
+            None,
+            "Fresh Rebuild DB",
+            "Summary",
+            "/tmp/fresh-rebuild-db/summary.md",
+        )
+        .unwrap();
+        replace_session_memories(&connection, &stored, &["fresh memory".to_string()]).unwrap();
+        connection
+            .execute(
+                "UPDATE sessions SET processed_at = '2026-04-27T10:00:00Z' WHERE id = ?1",
+                rusqlite::params![stored.id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE session_memories SET created_at = '2026-04-27T10:00:00Z' WHERE session_row_id = ?1",
+                rusqlite::params![stored.id],
+            )
+            .unwrap();
+
+        let result = super::enqueue_rebuild_memories(&connection).unwrap();
+
+        assert_eq!(result.total, 1);
+        let jobs = list_active_jobs(&connection).unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].kind, "rebuild_memories");
+        assert_eq!(jobs[0].total, 1);
+    }
+
+    #[test]
+    fn memory_search_results_replace_latest_rows() {
+        let temp = tempfile::tempdir().unwrap();
+        let connection = test_connection_with_session(&temp, "search-db");
+        let stored = unprocessed_session_by_session_id(&connection, "search-db")
+            .unwrap()
+            .remove(0);
+        replace_session_memories(&connection, &stored, &["SQLite memory".to_string()]).unwrap();
+        let job = super::enqueue_search_memories(&connection, "sqlite").unwrap();
+        let search_id = super::create_memory_search(&connection, job.job_id, "sqlite").unwrap();
+
+        super::replace_memory_search_results(
+            &connection,
+            search_id,
+            "completed",
+            "1 memory found",
+            &[MemorySearchResultRecord {
+                source_session: "search-db".into(),
+                session_title: "search-db".into(),
+                project_slug: "search-db".into(),
+                memory: "SQLite memory".into(),
+                ordinal: 0,
+            }],
+        )
+        .unwrap();
+
+        let latest = super::latest_memory_search(&connection).unwrap().unwrap();
+        assert_eq!(latest.query, "sqlite");
+        assert_eq!(latest.results[0].memory, "SQLite memory");
     }
 
     #[test]
@@ -1740,6 +2513,78 @@ mod tests {
     }
 
     #[test]
+    fn analyze_sessions_updated_after_includes_pending_and_failed_sessions() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
+        std::fs::create_dir_all(&paths.data_dir).unwrap();
+        let mut connection = open(&paths).unwrap();
+        migrate(&connection).unwrap();
+        upsert_raw_sessions(
+            &mut connection,
+            &[
+                RawSession {
+                    source: "codex".into(),
+                    session_id: "recent-pending".into(),
+                    workdir: "/tmp/analyze-range".into(),
+                    created_at: "2026-04-27T00:00:00Z".into(),
+                    updated_at: "2026-04-27T00:00:01Z".into(),
+                    raw_path: "/tmp/recent-pending.jsonl".into(),
+                    messages: vec![RawMessage {
+                        role: "user".into(),
+                        content: "Recent pending".into(),
+                    }],
+                },
+                RawSession {
+                    source: "codex".into(),
+                    session_id: "recent-failed".into(),
+                    workdir: "/tmp/analyze-range".into(),
+                    created_at: "2026-04-27T00:00:00Z".into(),
+                    updated_at: "2026-04-27T00:00:02Z".into(),
+                    raw_path: "/tmp/recent-failed.jsonl".into(),
+                    messages: vec![RawMessage {
+                        role: "user".into(),
+                        content: "Recent failed".into(),
+                    }],
+                },
+                RawSession {
+                    source: "codex".into(),
+                    session_id: "old-failed".into(),
+                    workdir: "/tmp/analyze-range".into(),
+                    created_at: "2026-04-10T00:00:00Z".into(),
+                    updated_at: "2026-04-10T00:00:01Z".into(),
+                    raw_path: "/tmp/old-failed.jsonl".into(),
+                    messages: vec![RawMessage {
+                        role: "user".into(),
+                        content: "Old failed".into(),
+                    }],
+                },
+            ],
+        )
+        .unwrap();
+        let recent_failed = unprocessed_session_by_session_id(&connection, "recent-failed")
+            .unwrap()
+            .remove(0);
+        mark_session_failed(&connection, recent_failed.id, "temporary").unwrap();
+        let old_failed = unprocessed_session_by_session_id(&connection, "old-failed")
+            .unwrap()
+            .remove(0);
+        mark_session_failed(&connection, old_failed.id, "old").unwrap();
+
+        let job = enqueue_analyze_sessions(&connection, Some("2026-04-20T00:00:00Z")).unwrap();
+        let sessions =
+            unprocessed_sessions_updated_after(&connection, "2026-04-20T00:00:00Z").unwrap();
+
+        assert_eq!(job.total, 2);
+        assert_eq!(
+            sessions
+                .iter()
+                .map(|session| session.session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["recent-failed", "recent-pending"]
+        );
+    }
+
+    #[test]
     fn reset_all_sessions_deletes_session_records() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
@@ -1788,6 +2633,51 @@ mod tests {
         assert_eq!(reset_all_sessions(&connection).unwrap(), 1);
 
         assert!(list_sessions(&connection).unwrap().is_empty());
+    }
+
+    #[test]
+    fn replace_session_memories_rewrites_rows_for_one_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
+        std::fs::create_dir_all(&paths.data_dir).unwrap();
+        let mut connection = open(&paths).unwrap();
+        migrate(&connection).unwrap();
+        upsert_raw_sessions(
+            &mut connection,
+            &[RawSession {
+                source: "codex".into(),
+                session_id: "memory-db".into(),
+                workdir: "/tmp/memory-db".into(),
+                created_at: "2026-04-26T00:00:00Z".into(),
+                updated_at: "2026-04-26T00:00:01Z".into(),
+                raw_path: "/tmp/memory-db.jsonl".into(),
+                messages: vec![RawMessage {
+                    role: "user".into(),
+                    content: "Remember me".into(),
+                }],
+            }],
+        )
+        .unwrap();
+        let stored = unprocessed_session_by_session_id(&connection, "memory-db")
+            .unwrap()
+            .remove(0);
+
+        replace_session_memories(
+            &connection,
+            &stored,
+            &["first memory".to_string(), "second memory".to_string()],
+        )
+        .unwrap();
+        replace_session_memories(&connection, &stored, &["replacement".to_string()]).unwrap();
+
+        assert_eq!(
+            session_memories_by_session_id(&connection, "memory-db").unwrap(),
+            vec!["replacement".to_string()]
+        );
+        assert_eq!(reset_all_memories(&connection).unwrap(), 1);
+        assert!(session_memories_by_session_id(&connection, "memory-db")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -2043,6 +2933,33 @@ mod tests {
 
         super::complete_job(&connection, reclaimed.id, "completed").unwrap();
         assert!(list_active_jobs(&connection).unwrap().is_empty());
+    }
+
+    fn test_connection_with_session(
+        temp: &tempfile::TempDir,
+        session_id: &str,
+    ) -> rusqlite::Connection {
+        let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
+        std::fs::create_dir_all(&paths.data_dir).unwrap();
+        let mut connection = open(&paths).unwrap();
+        migrate(&connection).unwrap();
+        upsert_raw_sessions(
+            &mut connection,
+            &[RawSession {
+                source: "codex".into(),
+                session_id: session_id.into(),
+                workdir: format!("/tmp/{session_id}"),
+                created_at: "2026-04-27T00:00:00Z".into(),
+                updated_at: "2026-04-27T00:00:01Z".into(),
+                raw_path: format!("/tmp/{session_id}.jsonl"),
+                messages: vec![RawMessage {
+                    role: "user".into(),
+                    content: "Remember SQLite".into(),
+                }],
+            }],
+        )
+        .unwrap();
+        connection
     }
 
     #[test]

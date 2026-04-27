@@ -135,6 +135,9 @@ Session 分析完成 (analysis.rs)
 :create entity_alias { name: String => canonical_id: Int }
 ```
 
+**实现注记（2026-04-27）**：
+Rust 侧 Milestone 2 先采用风险表中的纯 SQLite fallback（`entity` / `relation` / `entity_alias` 表，存储于 `~/.kittynest/kittynest_graph.db`）。原因是 `cozo` crate 的 SQLite storage 依赖链会与当前 `rusqlite` 依赖同时链接 `sqlite3`，Cargo 无法解析该 native link 冲突。应用层接口保持图写入边界，后续若切换 CozoDB，只需替换 `graph.rs` 存储实现。
+
 **查询示例**：
 ```cozo
 # 查找与 "Tauri" 有直接关系的所有实体

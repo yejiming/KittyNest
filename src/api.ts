@@ -6,7 +6,11 @@ import type {
   ImportResult,
   JobRecord,
   LlmSettings,
+  MemoryEntityRecord,
+  MemoryRelatedSession,
+  MemorySearchRecord,
   ScanResult,
+  SessionMemoryDetail,
 } from "./types";
 
 export type { CreateTaskResult } from "./types";
@@ -14,11 +18,24 @@ export type { CreateTaskResult } from "./types";
 const fallbackState: AppState = {
   dataDir: "~/.kittynest",
   llmSettings: {
+    id: "openrouter-default",
+    remark: "Default",
     provider: "OpenRouter",
     baseUrl: "https://openrouter.ai/api/v1",
     interface: "openai",
     model: "",
     apiKey: "",
+    maxContext: 128000,
+    maxTokens: 4096,
+    temperature: 0.2,
+    models: [],
+    scenarioModels: {
+      defaultModel: "",
+      projectModel: "",
+      sessionModel: "",
+      memoryModel: "",
+      taskModel: "",
+    },
   },
   providerPresets: [
     {
@@ -97,7 +114,7 @@ export async function enqueueAnalyzeProjectSessions(projectSlug: string): Promis
 
 export async function enqueueAnalyzeProject(projectSlug: string): Promise<EnqueueJobResult> {
   if (!isTauriRuntime()) {
-    return { jobId: 1, total: 2 };
+    return { jobId: 1, total: 3 };
   }
   return invoke<EnqueueJobResult>("enqueue_analyze_project", { projectSlug });
 }
@@ -213,4 +230,66 @@ export async function resetTasks(): Promise<{ reset: number }> {
     return { reset: 0 };
   }
   return invoke<{ reset: number }>("reset_tasks");
+}
+
+export async function resetMemories(): Promise<{ reset: number }> {
+  if (!isTauriRuntime()) {
+    return { reset: 0 };
+  }
+  return invoke<{ reset: number }>("reset_memories");
+}
+
+export async function enqueueRebuildMemories(): Promise<EnqueueJobResult> {
+  if (!isTauriRuntime()) {
+    return { jobId: 1, total: 1 };
+  }
+  return invoke<EnqueueJobResult>("enqueue_rebuild_memories");
+}
+
+export async function rebuildMemories(): Promise<{ rebuilt: number }> {
+  const result = await enqueueRebuildMemories();
+  return { rebuilt: result.total };
+}
+
+export async function enqueueSearchMemories(query: string): Promise<EnqueueJobResult> {
+  if (!isTauriRuntime()) {
+    return { jobId: 1, total: 1 };
+  }
+  return invoke<EnqueueJobResult>("enqueue_search_memories", { query });
+}
+
+export async function getMemorySearch(): Promise<MemorySearchRecord | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+  const result = await invoke<{ search: MemorySearchRecord | null }>("get_memory_search");
+  return result.search;
+}
+
+export async function getSessionMemory(sessionId: string): Promise<SessionMemoryDetail> {
+  if (!isTauriRuntime()) {
+    return {
+      sessionId,
+      memoryPath: "",
+      memories: [],
+      relatedSessions: [],
+    };
+  }
+  return invoke<SessionMemoryDetail>("get_session_memory", { sessionId });
+}
+
+export async function listMemoryEntities(): Promise<MemoryEntityRecord[]> {
+  if (!isTauriRuntime()) {
+    return [];
+  }
+  const result = await invoke<{ entities: MemoryEntityRecord[] }>("list_memory_entities");
+  return result.entities;
+}
+
+export async function listEntitySessions(entity: string): Promise<MemoryRelatedSession[]> {
+  if (!isTauriRuntime()) {
+    return [];
+  }
+  const result = await invoke<{ sessions: MemoryRelatedSession[] }>("list_entity_sessions", { entity });
+  return result.sessions;
 }

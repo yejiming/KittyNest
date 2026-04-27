@@ -108,6 +108,65 @@ pub fn enqueue_review_project(
 }
 
 #[tauri::command]
+pub fn enqueue_rebuild_memories(
+    services: State<'_, AppServices>,
+) -> CommandResult<serde_json::Value> {
+    let connection = crate::db::open(&services.paths).map_err(to_command_error)?;
+    crate::db::migrate(&connection).map_err(to_command_error)?;
+    crate::db::enqueue_rebuild_memories(&connection)
+        .map(|result| serde_json::json!({ "jobId": result.job_id, "total": result.total }))
+        .map_err(to_command_error)
+}
+
+#[tauri::command]
+pub fn enqueue_search_memories(
+    query: String,
+    services: State<'_, AppServices>,
+) -> CommandResult<serde_json::Value> {
+    let connection = crate::db::open(&services.paths).map_err(to_command_error)?;
+    crate::db::migrate(&connection).map_err(to_command_error)?;
+    crate::db::enqueue_search_memories(&connection, &query)
+        .map(|result| serde_json::json!({ "jobId": result.job_id, "total": result.total }))
+        .map_err(to_command_error)
+}
+
+#[tauri::command]
+pub fn get_memory_search(services: State<'_, AppServices>) -> CommandResult<serde_json::Value> {
+    let connection = crate::db::open(&services.paths).map_err(to_command_error)?;
+    crate::db::migrate(&connection).map_err(to_command_error)?;
+    crate::db::latest_memory_search(&connection)
+        .map(|search| serde_json::json!({ "search": search }))
+        .map_err(to_command_error)
+}
+
+#[tauri::command]
+pub fn get_session_memory(
+    session_id: String,
+    services: State<'_, AppServices>,
+) -> CommandResult<serde_json::Value> {
+    get_session_memory_inner(&services.paths, &session_id)
+        .map(|detail| serde_json::to_value(detail).unwrap_or_else(|_| serde_json::json!({})))
+        .map_err(to_command_error)
+}
+
+#[tauri::command]
+pub fn list_memory_entities(services: State<'_, AppServices>) -> CommandResult<serde_json::Value> {
+    crate::graph::entity_session_counts(&services.paths)
+        .map(|entities| serde_json::json!({ "entities": entities }))
+        .map_err(to_command_error)
+}
+
+#[tauri::command]
+pub fn list_entity_sessions(
+    entity: String,
+    services: State<'_, AppServices>,
+) -> CommandResult<serde_json::Value> {
+    list_entity_sessions_inner(&services.paths, &entity)
+        .map(|sessions| serde_json::json!({ "sessions": sessions }))
+        .map_err(to_command_error)
+}
+
+#[tauri::command]
 pub fn get_active_jobs(services: State<'_, AppServices>) -> CommandResult<serde_json::Value> {
     get_active_jobs_inner(&services.paths)
         .map(|jobs| serde_json::json!({ "jobs": jobs }))
@@ -209,6 +268,18 @@ pub fn reset_tasks(services: State<'_, AppServices>) -> CommandResult<serde_json
         .map_err(to_command_error)
 }
 
+#[tauri::command]
+pub fn reset_memories(services: State<'_, AppServices>) -> CommandResult<serde_json::Value> {
+    reset_memories_inner(&services.paths)
+        .map(|reset| serde_json::json!({ "reset": reset }))
+        .map_err(to_command_error)
+}
+
+#[tauri::command]
+pub fn rebuild_memories(services: State<'_, AppServices>) -> CommandResult<serde_json::Value> {
+    enqueue_rebuild_memories(services)
+}
+
 pub(crate) fn delete_task_inner(
     paths: &crate::models::AppPaths,
     project_slug: &str,
@@ -253,6 +324,18 @@ pub(crate) fn reset_tasks_inner(paths: &crate::models::AppPaths) -> anyhow::Resu
     crate::db::migrate(&connection)?;
     let reset = crate::db::reset_all_tasks(&connection)?;
     remove_project_child_dirs(paths, "tasks")?;
+    Ok(reset)
+}
+
+pub(crate) fn reset_memories_inner(paths: &crate::models::AppPaths) -> anyhow::Result<usize> {
+    let connection = crate::db::open(paths)?;
+    crate::db::migrate(&connection)?;
+    let reset = crate::db::reset_all_memories(&connection)?;
+    let session_memories_dir = paths.memories_dir.join("sessions");
+    if session_memories_dir.exists() {
+        std::fs::remove_dir_all(session_memories_dir)?;
+    }
+    crate::graph::reset_graph(paths)?;
     Ok(reset)
 }
 
@@ -373,11 +456,88 @@ fn scan_sources_into_db(
 fn read_markdown_file_inner(paths: &crate::models::AppPaths, path: &str) -> anyhow::Result<String> {
     let requested = std::path::PathBuf::from(path);
     let canonical = requested.canonicalize()?;
-    let projects_dir = paths.projects_dir.canonicalize()?;
-    if !canonical.starts_with(projects_dir) {
-        anyhow::bail!("Markdown path is outside KittyNest project store");
+    let allowed_roots = [
+        paths.projects_dir.canonicalize()?,
+        paths.memories_dir.canonicalize()?,
+    ];
+    if !allowed_roots.iter().any(|root| canonical.starts_with(root)) {
+        anyhow::bail!("Markdown path is outside KittyNest stores");
     }
     Ok(std::fs::read_to_string(canonical)?)
+}
+
+fn get_session_memory_inner(
+    paths: &crate::models::AppPaths,
+    session_id: &str,
+) -> anyhow::Result<crate::models::SessionMemoryDetail> {
+    let connection = crate::db::open(paths)?;
+    crate::db::migrate(&connection)?;
+    let memory_path = paths
+        .memories_dir
+        .join("sessions")
+        .join(crate::utils::slugify_lower(session_id))
+        .join("memory.md");
+    let mut memories = crate::db::session_memories_by_session_id(&connection, session_id)?;
+    if memories.is_empty() {
+        memories = read_memory_lines(&memory_path)?;
+    }
+    let related = crate::graph::related_sessions_for_session(paths, session_id)?;
+    Ok(crate::models::SessionMemoryDetail {
+        session_id: session_id.to_string(),
+        memory_path: memory_path.to_string_lossy().to_string(),
+        memories,
+        related_sessions: hydrate_related_sessions(paths, related)?,
+    })
+}
+
+fn list_entity_sessions_inner(
+    paths: &crate::models::AppPaths,
+    entity: &str,
+) -> anyhow::Result<Vec<crate::models::MemoryRelatedSession>> {
+    let related = crate::graph::related_sessions_for_entity(paths, entity)?;
+    hydrate_related_sessions(paths, related)
+}
+
+fn hydrate_related_sessions(
+    paths: &crate::models::AppPaths,
+    related: Vec<crate::graph::RelatedSession>,
+) -> anyhow::Result<Vec<crate::models::MemoryRelatedSession>> {
+    let connection = crate::db::open(paths)?;
+    crate::db::migrate(&connection)?;
+    let titles = crate::db::list_sessions(&connection)?
+        .into_iter()
+        .map(|session| {
+            (
+                session.session_id,
+                session.title.unwrap_or_else(|| session.raw_path),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    Ok(related
+        .into_iter()
+        .map(|session| crate::models::MemoryRelatedSession {
+            title: titles
+                .get(&session.session_id)
+                .cloned()
+                .unwrap_or_else(|| session.session_id.clone()),
+            session_id: session.session_id,
+            project_slug: session.project_slug,
+            shared_entities: session.shared_entities,
+        })
+        .collect())
+}
+
+fn read_memory_lines(path: &std::path::Path) -> anyhow::Result<Vec<String>> {
+    match std::fs::read_to_string(path) {
+        Ok(content) => Ok(content
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(ToString::to_string)
+            .collect()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn source_statuses_with_roots(
@@ -413,9 +573,12 @@ fn codex_home_dir() -> std::path::PathBuf {
 mod tests {
     use super::{
         get_app_state_with_roots, get_cached_app_state_with_roots, read_markdown_file_inner,
-        reset_projects_inner, reset_sessions_inner, reset_tasks_inner,
+        reset_memories_inner, reset_projects_inner, reset_sessions_inner, reset_tasks_inner,
     };
-    use crate::models::AppPaths;
+    use crate::{
+        memory::MemoryEntity,
+        models::{AppPaths, RawMessage, RawSession},
+    };
 
     #[test]
     fn get_app_state_discovers_existing_claude_and_codex_sessions_on_load() {
@@ -527,6 +690,49 @@ mod tests {
     }
 
     #[test]
+    fn read_markdown_file_allows_memory_store_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
+        crate::config::initialize_workspace(&paths).unwrap();
+        let memory_dir = paths.memories_dir.join("sessions/session-1");
+        std::fs::create_dir_all(&memory_dir).unwrap();
+        let memory_path = memory_dir.join("memory.md");
+        std::fs::write(&memory_path, "memory line\n").unwrap();
+
+        let content = read_markdown_file_inner(&paths, &memory_path.to_string_lossy()).unwrap();
+
+        assert_eq!(content, "memory line\n");
+    }
+
+    #[test]
+    fn session_memory_detail_includes_path_lines_and_related_sessions() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
+        let session = seed_command_session_with_memory(
+            &paths,
+            "detail-session",
+            "MemoryProject",
+            "SQLite memory",
+        );
+        crate::graph::write_session_graph(
+            &paths,
+            &session,
+            &[crate::memory::MemoryEntity {
+                name: "SQLite".into(),
+                entity_type: "technology".into(),
+            }],
+        )
+        .unwrap();
+
+        let detail = super::get_session_memory_inner(&paths, "detail-session").unwrap();
+
+        assert!(detail
+            .memory_path
+            .ends_with("memories/sessions/detail-session/memory.md"));
+        assert_eq!(detail.memories, vec!["SQLite memory".to_string()]);
+    }
+
+    #[test]
     fn reset_tasks_inner_deletes_task_directories() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
@@ -555,6 +761,82 @@ mod tests {
     }
 
     #[test]
+    fn reset_memories_inner_deletes_memory_files_records_and_graph() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
+        crate::config::initialize_workspace(&paths).unwrap();
+        let mut connection = crate::db::open(&paths).unwrap();
+        crate::db::migrate(&connection).unwrap();
+        crate::db::upsert_raw_sessions(
+            &mut connection,
+            &[RawSession {
+                source: "codex".into(),
+                session_id: "reset-memory".into(),
+                workdir: "/tmp/reset-memory".into(),
+                created_at: "2026-04-26T00:00:00Z".into(),
+                updated_at: "2026-04-26T00:00:01Z".into(),
+                raw_path: "/tmp/reset-memory.jsonl".into(),
+                messages: vec![RawMessage {
+                    role: "user".into(),
+                    content: "Remember reset".into(),
+                }],
+            }],
+        )
+        .unwrap();
+        let stored = crate::db::unprocessed_session_by_session_id(&connection, "reset-memory")
+            .unwrap()
+            .remove(0);
+        crate::db::mark_session_processed_with_optional_task_at(
+            &connection,
+            stored.id,
+            None,
+            "Reset Memory",
+            "Summary",
+            "/tmp/reset-memory/summary.md",
+            "2026-04-27T10:00:00Z",
+        )
+        .unwrap();
+        crate::db::replace_session_memories(
+            &connection,
+            &stored,
+            &["memory to delete".to_string()],
+        )
+        .unwrap();
+        crate::graph::write_session_graph(
+            &paths,
+            &stored,
+            &[MemoryEntity {
+                name: "Memory".into(),
+                entity_type: "concept".into(),
+            }],
+        )
+        .unwrap();
+        let memory_dir = paths.memories_dir.join("sessions/reset-memory");
+        std::fs::create_dir_all(&memory_dir).unwrap();
+        std::fs::write(memory_dir.join("memory.md"), "memory to delete\n").unwrap();
+
+        let reset = reset_memories_inner(&paths).unwrap();
+
+        assert_eq!(reset, 1);
+        assert_eq!(
+            crate::db::enqueue_rebuild_memories(&connection)
+                .unwrap()
+                .total,
+            2
+        );
+        assert!(!paths.memories_dir.join("sessions").exists());
+        assert!(
+            crate::db::session_memories_by_session_id(&connection, "reset-memory")
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            crate::graph::graph_counts(&paths).unwrap(),
+            crate::graph::GraphCounts { entities: 0 }
+        );
+    }
+
+    #[test]
     fn reset_projects_inner_deletes_all_project_directories() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
@@ -572,5 +854,52 @@ mod tests {
         reset_projects_inner(&paths).unwrap();
 
         assert!(!project_dir.exists());
+    }
+
+    fn seed_command_session_with_memory(
+        paths: &AppPaths,
+        session_id: &str,
+        project_slug: &str,
+        memory: &str,
+    ) -> crate::models::StoredSession {
+        crate::config::initialize_workspace(paths).unwrap();
+        let mut connection = crate::db::open(paths).unwrap();
+        crate::db::migrate(&connection).unwrap();
+        crate::db::upsert_raw_sessions(
+            &mut connection,
+            &[RawSession {
+                source: "codex".into(),
+                session_id: session_id.into(),
+                workdir: format!("/Users/kc/{project_slug}"),
+                created_at: "2026-04-27T00:00:00Z".into(),
+                updated_at: "2026-04-27T00:00:01Z".into(),
+                raw_path: format!("/tmp/{session_id}.jsonl"),
+                messages: vec![RawMessage {
+                    role: "user".into(),
+                    content: "Remember SQLite".into(),
+                }],
+            }],
+        )
+        .unwrap();
+        let session = crate::db::unprocessed_session_by_session_id(&connection, session_id)
+            .unwrap()
+            .remove(0);
+        crate::db::mark_session_processed_with_optional_task(
+            &connection,
+            session.id,
+            None,
+            session_id,
+            "Summary",
+            &format!("/tmp/{session_id}/summary.md"),
+        )
+        .unwrap();
+        crate::db::replace_session_memories(&connection, &session, &[memory.to_string()]).unwrap();
+        let memory_dir = paths
+            .memories_dir
+            .join("sessions")
+            .join(crate::utils::slugify_lower(session_id));
+        std::fs::create_dir_all(&memory_dir).unwrap();
+        std::fs::write(memory_dir.join("memory.md"), format!("{memory}\n")).unwrap();
+        session
     }
 }

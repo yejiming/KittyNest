@@ -4,12 +4,30 @@ export interface ProviderPreset {
   interface: string;
 }
 
-export interface LlmSettings {
+export interface LlmModelSettings {
+  id: string;
+  remark: string;
   provider: string;
   baseUrl: string;
   interface: string;
   model: string;
   apiKey: string;
+}
+
+export interface LlmScenarioModels {
+  defaultModel: string;
+  projectModel: string;
+  sessionModel: string;
+  memoryModel: string;
+  taskModel: string;
+}
+
+export interface LlmSettings extends LlmModelSettings {
+  maxContext: number;
+  maxTokens: number;
+  temperature: number;
+  models: LlmModelSettings[];
+  scenarioModels: LlmScenarioModels;
 }
 
 export interface SourceStatus {
@@ -52,6 +70,7 @@ export interface ProjectRecord {
   sources: string[];
   infoPath: string | null;
   progressPath: string | null;
+  userPreferencePath: string | null;
   reviewStatus: string;
   lastReviewedAt: string | null;
   lastSessionAt: string | null;
@@ -119,4 +138,45 @@ export interface CreateTaskResult {
   total: number;
   userPromptPath: string;
   llmPromptPath: string;
+}
+
+export interface MemorySearchResultRecord {
+  sourceSession: string;
+  sessionTitle: string;
+  projectSlug: string;
+  memory: string;
+  ordinal: number;
+}
+
+export interface MemorySearchRecord {
+  id: number;
+  jobId: number;
+  query: string;
+  status: string;
+  message: string;
+  createdAt: string;
+  updatedAt: string;
+  results: MemorySearchResultRecord[];
+}
+
+export interface MemoryEntityRecord {
+  entity: string;
+  canonicalName?: string;
+  entityType: string;
+  sessionCount: number;
+  createdAt: string;
+}
+
+export interface MemoryRelatedSession {
+  sessionId: string;
+  title: string;
+  projectSlug: string;
+  sharedEntities: string[];
+}
+
+export interface SessionMemoryDetail {
+  sessionId: string;
+  memoryPath: string;
+  memories: string[];
+  relatedSessions: MemoryRelatedSession[];
 }
