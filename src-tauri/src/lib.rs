@@ -1,4 +1,5 @@
 pub mod analysis;
+pub mod assistant_context;
 pub mod commands;
 pub mod config;
 pub mod db;
