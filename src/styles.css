@@ -1683,6 +1683,10 @@ select {
   display: none;
 }
 
+.agent-message-list > * {
+  flex-shrink: 0;
+}
+
 .agent-empty {
   align-items: center;
   border: 1px dashed rgba(116, 255, 241, 0.25);
