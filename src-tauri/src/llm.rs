@@ -432,6 +432,7 @@ pub mod test_support {
     struct MockState {
         json_responses: VecDeque<serde_json::Value>,
         markdown_responses: VecDeque<String>,
+        markdown_responses_by_prompt: Vec<(String, String)>,
         requests: Vec<MockRequest>,
     }
 
@@ -467,6 +468,17 @@ pub mod test_support {
             .into_iter()
             .map(ToString::to_string)
             .collect::<VecDeque<_>>();
+        state.markdown_responses_by_prompt.clear();
+        state.requests.clear();
+    }
+
+    pub fn set_markdown_responses_by_prompt(responses: Vec<(&str, &str)>) {
+        let mut state = state().lock().expect("mock LLM state poisoned");
+        state.markdown_responses.clear();
+        state.markdown_responses_by_prompt = responses
+            .into_iter()
+            .map(|(needle, response)| (needle.to_string(), response.to_string()))
+            .collect();
         state.requests.clear();
     }
 
@@ -501,7 +513,15 @@ pub mod test_support {
         user_prompt: &str,
     ) -> Option<LlmTextResponse> {
         let mut state = state().lock().ok()?;
-        let content = state.markdown_responses.pop_front()?;
+        let content = if let Some(index) = state
+            .markdown_responses_by_prompt
+            .iter()
+            .position(|(needle, _)| system_prompt.contains(needle) || user_prompt.contains(needle))
+        {
+            state.markdown_responses_by_prompt.remove(index).1
+        } else {
+            state.markdown_responses.pop_front()?
+        };
         state.requests.push(MockRequest {
             kind: "markdown".into(),
             provider: settings.provider.clone(),

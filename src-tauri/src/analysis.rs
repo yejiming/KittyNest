@@ -1362,6 +1362,7 @@ fn remote_project_user_preference(
         - One-off tasks or bug fixes\n\
         - Transient decisions that only applied to a single session\n\
         - Summaries of what the user did\n\n\
+        - Repository instruction text such as AGENTS.md; Do not reproduce or summarize AGENTS.md instructions\n\n\
         ## Output template\n\
         Return Markdown using this exact structure. Omit any section where no clear preference is found:\n\n\
         
@@ -2878,11 +2879,20 @@ mod tests {
             })
             .collect::<Vec<_>>();
         crate::llm::test_support::set_json_responses(session_responses);
-        crate::llm::test_support::set_markdown_responses(vec![
-            "## summary\n\nProject analyzed.\n\n## tech_stack\n\nRust.\n\n## architecture\n\nTauri.\n\n## code_quality\n\nFocused.\n\n## risks\n\nNone.",
-            "# Progress\n\nCurrent project progress.",
-            "# User Preference\n\nPrefers concise implementation notes.",
-            "# AGENTS.md\n\nAlways run focused tests before changing code.",
+        crate::llm::test_support::set_markdown_responses_by_prompt(vec![
+            (
+                "Review the project",
+                "## summary\n\nProject analyzed.\n\n## tech_stack\n\nRust.\n\n## architecture\n\nTauri.\n\n## code_quality\n\nFocused.\n\n## risks\n\nNone.",
+            ),
+            ("Project Progress", "# Progress\n\nCurrent project progress."),
+            (
+                "durable, reusable working preferences",
+                "# User Preference\n\nPrefers concise implementation notes.",
+            ),
+            (
+                "Create an AGENTS.md file",
+                "# AGENTS.md\n\nAlways run focused tests before changing code.",
+            ),
         ]);
 
         let enqueued = crate::db::enqueue_analyze_project(&connection, &project.slug).unwrap();
@@ -2936,7 +2946,11 @@ mod tests {
             .contains("Always run focused tests before changing code."));
         let preference_request = markdown_requests
             .iter()
-            .find(|request| request.system_prompt.contains("durable user preferences"))
+            .find(|request| {
+                request
+                    .system_prompt
+                    .contains("durable, reusable working preferences")
+            })
             .unwrap();
         let agents_request = markdown_requests
             .iter()
