@@ -77,7 +77,8 @@ impl ThinkBlockStreamFilter {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentStoredMessage {
     pub role: String,
     pub content: String,

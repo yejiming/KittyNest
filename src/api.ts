@@ -230,6 +230,13 @@ export async function stopAgentRun(sessionId: string): Promise<{ stopped: boolea
   return invoke<{ stopped: boolean }>("stop_agent_run", { sessionId });
 }
 
+export async function clearAgentSession(sessionId: string): Promise<{ cleared: boolean }> {
+  if (!isTauriRuntime()) {
+    return { cleared: true };
+  }
+  return invoke<{ cleared: boolean }>("clear_agent_session", { sessionId });
+}
+
 export async function resolveAgentPermission(
   sessionId: string,
   requestId: string,

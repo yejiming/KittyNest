@@ -4,6 +4,7 @@ import {
   ChevronUp,
   CircleStop,
   ListTodo,
+  RefreshCw,
   Send,
   Settings,
   Wrench,
@@ -14,6 +15,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   isTauriRuntime,
+  clearAgentSession,
   resolveAgentAskUser,
   resolveAgentPermission,
   startAgentRun,
@@ -310,6 +312,18 @@ export function AgentDrawer({ open, projects, onClose }: AgentDrawerProps) {
     setRunning(false);
   }
 
+  async function refreshSession() {
+    if (running) {
+      await stopAgentRun(sessionId);
+    }
+    await clearAgentSession(sessionId);
+    setMessages([]);
+    setTodos([]);
+    setContext(emptyContext);
+    setInput("");
+    setRunning(false);
+  }
+
   function startResize(event: ReactPointerEvent<HTMLDivElement>) {
     event.preventDefault();
     const startX = event.clientX;
@@ -376,6 +390,9 @@ export function AgentDrawer({ open, projects, onClose }: AgentDrawerProps) {
             <strong>Agent Assistant</strong>
           </div>
           <div className="agent-header-actions">
+            <button aria-label="Refresh assistant" className="agent-icon-button" onClick={() => void refreshSession()}>
+              <RefreshCw size={16} />
+            </button>
             <button aria-label="Close assistant" className="agent-icon-button" onClick={onClose}>
               <X size={17} />
             </button>

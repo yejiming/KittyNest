@@ -109,6 +109,14 @@ struct AgentSession {
     pending_ask_user: HashMap<String, Arc<PendingAskUser>>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSessionSnapshot {
+    pub messages: Vec<AgentStoredMessage>,
+    pub llm_messages: Vec<serde_json::Value>,
+    pub todos: Vec<AgentTodo>,
+}
+
 #[derive(Default)]
 struct PendingPermission {
     response: Mutex<Option<PermissionDecision>>,
@@ -186,6 +194,48 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
             .expect("agent sessions lock poisoned")
             .get(session_id)
             .is_some_and(|session| session.cancelled)
+    }
+
+    pub fn clear_session(&self, session_id: &str) {
+        self.stop_run(session_id);
+        let mut sessions = self
+            .inner
+            .sessions
+            .lock()
+            .expect("agent sessions lock poisoned");
+        sessions.insert(session_id.into(), AgentSession::default());
+    }
+
+    pub fn session_export(&self, session_id: &str) -> AgentSessionSnapshot {
+        self.inner
+            .sessions
+            .lock()
+            .expect("agent sessions lock poisoned")
+            .get(session_id)
+            .map(|session| AgentSessionSnapshot {
+                messages: session.messages.clone(),
+                llm_messages: session.llm_messages.clone(),
+                todos: session.todos.clone(),
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn session_import(&self, session_id: &str, snapshot: AgentSessionSnapshot) {
+        self.stop_run(session_id);
+        let mut sessions = self
+            .inner
+            .sessions
+            .lock()
+            .expect("agent sessions lock poisoned");
+        sessions.insert(
+            session_id.into(),
+            AgentSession {
+                messages: snapshot.messages,
+                llm_messages: snapshot.llm_messages,
+                todos: snapshot.todos,
+                ..AgentSession::default()
+            },
+        );
     }
 
     pub fn resolve_permission(
@@ -917,6 +967,57 @@ mod tests {
 
         assert!(registry.stop_run("session-1"));
         assert!(registry.is_cancelled("session-1"));
+    }
+
+    #[test]
+    fn clear_session_removes_messages_todos_and_context() {
+        let registry = super::AgentRegistry::new_for_tests(VecEmitter::default());
+        let settings = crate::config::default_llm_settings();
+        let project_root = tempfile::tempdir().unwrap();
+        let summary_root = tempfile::tempdir().unwrap();
+        registry.run_with_llm_for_tests(
+            "session-1",
+            project_root.path().to_path_buf(),
+            summary_root.path().to_path_buf(),
+            settings,
+            "hello",
+            |_messages, _tools, _on_token| {
+                Ok(super::llm::AssistantLlmResponse {
+                    content: "world".into(),
+                    tool_calls: Vec::new(),
+                })
+            },
+        );
+
+        assert!(!registry.session_export("session-1").messages.is_empty());
+
+        registry.clear_session("session-1");
+
+        assert!(registry.session_export("session-1").messages.is_empty());
+        assert!(registry.session_export("session-1").llm_messages.is_empty());
+    }
+
+    #[test]
+    fn import_session_replaces_backend_context() {
+        let registry = super::AgentRegistry::new_for_tests(VecEmitter::default());
+        registry.session_import(
+            "session-1",
+            super::AgentSessionSnapshot {
+                messages: vec![super::context::AgentStoredMessage::new("user", "loaded")],
+                llm_messages: vec![serde_json::json!({"role": "user", "content": "loaded"})],
+                todos: vec![super::tools::AgentTodo {
+                    content: "Loaded todo".into(),
+                    active_form: "Loading todo".into(),
+                    status: "pending".into(),
+                }],
+            },
+        );
+
+        let exported = registry.session_export("session-1");
+
+        assert_eq!(exported.messages[0].content, "loaded");
+        assert_eq!(exported.llm_messages[0]["content"], "loaded");
+        assert_eq!(exported.todos[0].content, "Loaded todo");
     }
 
     #[test]

@@ -26,6 +26,7 @@ type ApiWithReviewQueue = typeof api & {
   stopJob: (jobId: number) => Promise<{ stopped: boolean }>;
   startAgentRun: (sessionId: string, projectSlug: string, message: string) => Promise<{ started: boolean }>;
   stopAgentRun: (sessionId: string) => Promise<{ stopped: boolean }>;
+  clearAgentSession: (sessionId: string) => Promise<{ cleared: boolean }>;
   resolveAgentPermission: (
     sessionId: string,
     requestId: string,
@@ -1418,6 +1419,30 @@ describe("assistant drawer", () => {
     expect(screen.getByText(/read_file/i)).toBeInTheDocument();
     expect(screen.getByText(/ship drawer/i)).toBeInTheDocument();
     expect(screen.getByText("Hello")).toBeInTheDocument();
+  });
+
+  it("refreshes the drawer by clearing frontend and backend session state", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue({
+      ...state,
+      projects: [{ ...state.projects[0], reviewStatus: "reviewed" }],
+    });
+    const clearAgentSession = vi
+      .spyOn(api as ApiWithReviewQueue, "clearAgentSession")
+      .mockResolvedValue({ cleared: true });
+
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: /^assistant$/i }));
+    const sessionId = window.sessionStorage.getItem("kittynest:agent-session") ?? "";
+
+    act(() => {
+      emitAgentEvent({ sessionId, type: "token", delta: "hello" });
+    });
+    expect(await screen.findByText("hello")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /^refresh assistant$/i }));
+
+    await waitFor(() => expect(clearAgentSession).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText("hello")).not.toBeInTheDocument();
   });
 
   it("keeps finished thinking and tool cards expandable in the chat", async () => {

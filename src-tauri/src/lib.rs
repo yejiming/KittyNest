@@ -59,6 +59,7 @@ pub fn run() {
             commands::stop_job,
             commands::start_agent_run,
             commands::stop_agent_run,
+            commands::clear_agent_session,
             commands::resolve_agent_permission,
             commands::resolve_agent_ask_user,
             commands::read_markdown_file,

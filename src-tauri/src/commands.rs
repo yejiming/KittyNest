@@ -237,6 +237,16 @@ pub fn stop_agent_run(
 }
 
 #[tauri::command]
+pub fn clear_agent_session(
+    app: tauri::AppHandle,
+    session_id: String,
+    _services: State<'_, AppServices>,
+) -> CommandResult<serde_json::Value> {
+    assistant_registry(app).clear_session(&session_id);
+    Ok(serde_json::json!({ "cleared": true }))
+}
+
+#[tauri::command]
 pub fn resolve_agent_permission(
     app: tauri::AppHandle,
     session_id: String,
