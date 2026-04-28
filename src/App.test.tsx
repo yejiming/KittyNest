@@ -1429,6 +1429,74 @@ describe("assistant drawer", () => {
     expect(screen.getByText(/import React/i)).toBeInTheDocument();
   });
 
+  it("coalesces duplicated assistant stream events into one visible turn", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue({
+      ...state,
+      projects: [{ ...state.projects[0], reviewStatus: "reviewed" }],
+    });
+
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: /^assistant$/i }));
+    const sessionId = window.sessionStorage.getItem("kittynest:agent-session") ?? "";
+    const events = [
+      { sessionId, type: "thinking_status", status: "running" },
+      { sessionId, type: "thinking_delta", delta: "reasoning" },
+      { sessionId, type: "thinking_status", status: "finished" },
+      {
+        sessionId,
+        type: "tool_start",
+        toolCallId: "call_1",
+        name: "read_file",
+        arguments: { file_path: "src/App.tsx" },
+        summary: "read_file src/App.tsx",
+      },
+      {
+        sessionId,
+        type: "tool_end",
+        toolCallId: "call_1",
+        status: "done",
+        resultPreview: "1\timport React",
+      },
+      { sessionId, type: "token", delta: "Hello" },
+      { sessionId, type: "done", reply: "Hello" },
+    ] as const;
+
+    act(() => {
+      for (const event of events) {
+        emitAgentEvent(event);
+        emitAgentEvent(event);
+      }
+    });
+
+    expect(screen.getAllByRole("button", { name: /thinking/i })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /read_file src\/app\.tsx/i })).toHaveLength(1);
+    expect(screen.getAllByText("Hello")).toHaveLength(1);
+  });
+
+  it("shows a completed tool card even when only the end event arrives", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue({
+      ...state,
+      projects: [{ ...state.projects[0], reviewStatus: "reviewed" }],
+    });
+
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: /^assistant$/i }));
+    const sessionId = window.sessionStorage.getItem("kittynest:agent-session") ?? "";
+
+    act(() => {
+      emitAgentEvent({
+        sessionId,
+        type: "tool_end",
+        toolCallId: "call_late",
+        status: "done",
+        resultPreview: "late result",
+      });
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: /tool/i }));
+    expect(screen.getByText(/late result/i)).toBeInTheDocument();
+  });
+
   it("resolves permission cards and removes them after selection", async () => {
     vi.spyOn(api, "getAppState").mockResolvedValue({
       ...state,

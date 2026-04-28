@@ -121,6 +121,7 @@ export function AgentDrawer({ open, projects, onClose }: AgentDrawerProps) {
   }, [sessionId]);
 
   useEffect(() => {
+    let disposed = false;
     const browserHandler = (event: Event) => {
       handleAgentEvent((event as CustomEvent<AgentEvent>).detail);
     };
@@ -131,11 +132,16 @@ export function AgentDrawer({ open, projects, onClose }: AgentDrawerProps) {
       void import("@tauri-apps/api/event").then(({ listen }) =>
         listen<AgentEvent>("agent://event", (event) => handleAgentEvent(event.payload)),
       ).then((cleanup) => {
+        if (disposed) {
+          cleanup();
+          return;
+        }
         unlisten = cleanup;
       });
     }
 
     return () => {
+      disposed = true;
       window.removeEventListener("kittynest-agent-event", browserHandler);
       unlisten?.();
     };
@@ -171,6 +177,10 @@ export function AgentDrawer({ open, projects, onClose }: AgentDrawerProps) {
         };
       });
       if (finished || !finalContent) return next;
+      const last = next[next.length - 1];
+      if (last?.role === "assistant" && last.status === status && last.content === finalContent) {
+        return next;
+      }
       return [
         ...next,
         { id: `assistant-${Date.now()}`, role: "assistant", content: finalContent, status },
@@ -180,7 +190,16 @@ export function AgentDrawer({ open, projects, onClose }: AgentDrawerProps) {
 
   function upsertThinkingMessage(event: AgentEvent) {
     setMessages((current) => {
-      const index = current.findIndex((message) => message.role === "thinking" && message.status === "running");
+      const runningIndex = findLastMessageIndex(
+        current,
+        (message) => message.role === "thinking" && message.status === "running",
+      );
+      const lastThinkingIndex = findLastMessageIndex(current, (message) => message.role === "thinking");
+      const index = runningIndex >= 0
+        ? runningIndex
+        : event.type === "thinking_status" && event.status !== "running"
+          ? lastThinkingIndex
+          : -1;
       const nextContent = event.type === "thinking_delta" ? event.delta ?? "" : "";
       if (index >= 0) {
         const next = [...current];
@@ -190,6 +209,9 @@ export function AgentDrawer({ open, projects, onClose }: AgentDrawerProps) {
           status: event.status ?? next[index].status,
         };
         return next;
+      }
+      if (event.type === "thinking_status" && event.status !== "running") {
+        return current;
       }
       return [
         ...current,
@@ -215,17 +237,37 @@ export function AgentDrawer({ open, projects, onClose }: AgentDrawerProps) {
   }
 
   function updateToolMessage(event: AgentEvent) {
-    setMessages((current) => current.map((message) => {
-      if (message.role !== "tool" || message.toolCallId !== event.toolCallId) return message;
-      return {
+    setMessages((current) => {
+      const index = current.findIndex((message) => message.role === "tool" && message.toolCallId === event.toolCallId);
+      const output = event.type === "tool_end" ? event.resultPreview ?? "" : event.delta ?? "";
+      if (index < 0) {
+        return [
+          ...current,
+          {
+            id: `tool-${event.toolCallId || Date.now()}`,
+            role: "tool",
+            toolCallId: event.toolCallId,
+            name: event.name ?? "tool",
+            status: event.type === "tool_end" ? event.status ?? "done" : "running",
+            summary: event.summary ?? event.name ?? "Tool",
+            output,
+            resultPreview: event.resultPreview ?? "",
+            expanded: false,
+          },
+        ];
+      }
+      const next = [...current];
+      const message = next[index];
+      next[index] = {
         ...message,
-        status: event.type === "tool_end" ? "done" : message.status,
+        status: event.type === "tool_end" ? event.status ?? "done" : message.status,
         output: event.type === "tool_end" && !message.output
           ? event.resultPreview ?? ""
           : `${message.output ?? ""}${event.delta ?? ""}`,
         resultPreview: event.resultPreview ?? message.resultPreview,
       };
-    }));
+      return next;
+    });
   }
 
   async function submitMessage() {
@@ -561,6 +603,13 @@ function ContextRing({ context, percent }: { context: AgentContextSnapshot; perc
       </div>
     </div>
   );
+}
+
+function findLastMessageIndex(messages: AgentMessage[], predicate: (message: AgentMessage) => boolean) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (predicate(messages[index])) return index;
+  }
+  return -1;
 }
 
 function normalizeTodos(value: unknown): AgentTodoItem[] {
