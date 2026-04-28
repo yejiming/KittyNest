@@ -10,6 +10,7 @@ mod ask_user;
 mod glob;
 mod grep;
 mod read_file;
+mod read_memory;
 mod todo_write;
 
 const SKIP_DIRS: &[&str] = &[
@@ -125,6 +126,7 @@ pub fn tool_schemas() -> Vec<serde_json::Value> {
         read_file::schema(),
         grep::schema(),
         glob::schema(),
+        read_memory::schema(),
         todo_write::schema(),
         ask_user::schema(),
     ]
@@ -150,6 +152,7 @@ pub fn execute_tool(name: &str, arguments: serde_json::Value, env: &mut ToolEnvi
         "read_file" => read_file::execute(arguments, env),
         "grep" => grep::execute(arguments, env),
         "glob" => glob::execute(arguments, env),
+        "read_memory" => read_memory::execute(arguments, env),
         "todo_write" => todo_write::execute(arguments, env),
         "ask_user" => ask_user::execute(arguments, env),
         _ => format!("Error: unknown tool '{name}'"),
@@ -437,5 +440,57 @@ mod tests {
 
         assert!(result.contains("User denied permission"));
         assert_eq!(env.permission_requests.len(), 1);
+    }
+
+    #[test]
+    fn read_memory_returns_memories_for_entity_sessions() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = crate::models::AppPaths::from_data_dir(temp.path().join("kittynest"));
+        let workdir = temp.path().join("sqlite-app");
+        std::fs::create_dir_all(&workdir).unwrap();
+        let mut connection = crate::db::open(&paths).unwrap();
+        crate::db::migrate(&connection).unwrap();
+        crate::db::upsert_raw_sessions(
+            &mut connection,
+            &[crate::models::RawSession {
+                source: "codex".into(),
+                session_id: "sqlite-session".into(),
+                workdir: workdir.to_string_lossy().to_string(),
+                created_at: "2026-04-28T00:00:00Z".into(),
+                updated_at: "2026-04-28T00:00:01Z".into(),
+                raw_path: temp.path().join("session.jsonl").to_string_lossy().to_string(),
+                messages: vec![crate::models::RawMessage {
+                    role: "user".into(),
+                    content: "remember sqlite".into(),
+                }],
+            }],
+        )
+        .unwrap();
+        let session = crate::db::unprocessed_session_by_session_id(&connection, "sqlite-session")
+            .unwrap()
+            .remove(0);
+        crate::db::replace_session_memories(
+            &connection,
+            &session,
+            &["Use SQLite fallback for graph memory".to_string()],
+        )
+        .unwrap();
+        crate::graph::write_session_graph(
+            &paths,
+            &session,
+            &[crate::memory::MemoryEntity {
+                name: "SQLite".into(),
+                entity_type: "technology".into(),
+            }],
+        )
+        .unwrap();
+        let summary_root = paths.projects_dir.join(&session.project_slug);
+        std::fs::create_dir_all(&summary_root).unwrap();
+        let mut env = super::ToolEnvironment::new(workdir, summary_root);
+
+        let result = super::execute_tool("read_memory", serde_json::json!({"entity": "SQLite"}), &mut env);
+
+        assert!(result.contains("sqlite-session"));
+        assert!(result.contains("Use SQLite fallback for graph memory"));
     }
 }
