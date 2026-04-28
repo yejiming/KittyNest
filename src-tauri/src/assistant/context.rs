@@ -37,7 +37,9 @@ impl ThinkBlockStreamFilter {
             }
             if remainder.starts_with("</think>") {
                 if !thinking.is_empty() {
-                    events.push(ThinkStreamEvent::ThinkingDelta(std::mem::take(&mut thinking)));
+                    events.push(ThinkStreamEvent::ThinkingDelta(std::mem::take(
+                        &mut thinking,
+                    )));
                 }
                 self.inside_think = false;
                 events.push(ThinkStreamEvent::ThinkingStatus("finished".into()));

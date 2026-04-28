@@ -179,7 +179,11 @@ pub fn tool_schemas() -> Vec<serde_json::Value> {
     ]
 }
 
-fn function_schema(name: &str, description: &str, parameters: serde_json::Value) -> serde_json::Value {
+fn function_schema(
+    name: &str,
+    description: &str,
+    parameters: serde_json::Value,
+) -> serde_json::Value {
     serde_json::json!({
         "type": "function",
         "function": {
@@ -202,7 +206,10 @@ pub fn execute_tool(name: &str, arguments: serde_json::Value, env: &mut ToolEnvi
 }
 
 fn read_file(arguments: serde_json::Value, env: &mut ToolEnvironment) -> String {
-    let Some(file_path) = arguments.get("file_path").and_then(serde_json::Value::as_str) else {
+    let Some(file_path) = arguments
+        .get("file_path")
+        .and_then(serde_json::Value::as_str)
+    else {
         return "Error: file_path is required".into();
     };
     let path = match resolve_tool_path(Some(file_path), &env.project_root.clone(), env) {
@@ -367,7 +374,10 @@ fn todo_write(arguments: serde_json::Value, env: &mut ToolEnvironment) -> String
 }
 
 fn ask_user(arguments: serde_json::Value, env: &mut ToolEnvironment) -> String {
-    let Some(questions) = arguments.get("questions").and_then(serde_json::Value::as_array) else {
+    let Some(questions) = arguments
+        .get("questions")
+        .and_then(serde_json::Value::as_array)
+    else {
         return "Error: questions must contain at least one item".into();
     };
     if questions.is_empty() || questions.len() > 4 {
@@ -423,7 +433,10 @@ fn normalize_todos(value: Option<&serde_json::Value>) -> Result<Vec<AgentTodo>, 
         if todo.active_form.is_empty() {
             return Err(format!("todo #{} is missing active_form", index + 1));
         }
-        if !matches!(todo.status.as_str(), "pending" | "in_progress" | "completed") {
+        if !matches!(
+            todo.status.as_str(),
+            "pending" | "in_progress" | "completed"
+        ) {
             return Err(format!("todo #{} has invalid status", index + 1));
         }
         if todo.status == "in_progress" {
@@ -446,13 +459,17 @@ fn resolve_tool_path(
     default: &Path,
     env: &mut ToolEnvironment,
 ) -> Result<PathBuf, String> {
-    let requested = raw.map(PathBuf::from).unwrap_or_else(|| default.to_path_buf());
+    let requested = raw
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default.to_path_buf());
     let absolute = if requested.is_absolute() {
         requested
     } else {
         env.project_root.join(requested)
     };
-    let canonical = absolute.canonicalize().map_err(|error| format!("Error: {error}"))?;
+    let canonical = absolute
+        .canonicalize()
+        .map_err(|error| format!("Error: {error}"))?;
     let project_root = env
         .project_root
         .canonicalize()
@@ -491,10 +508,9 @@ fn walk_files(root: &Path, include: Option<&str>) -> Vec<PathBuf> {
     WalkDir::new(root)
         .into_iter()
         .filter_entry(|entry| {
-            !entry
-                .path()
-                .components()
-                .any(|component| SKIP_DIRS.contains(&component.as_os_str().to_string_lossy().as_ref()))
+            !entry.path().components().any(|component| {
+                SKIP_DIRS.contains(&component.as_os_str().to_string_lossy().as_ref())
+            })
         })
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_file())
@@ -537,7 +553,11 @@ mod tests {
     #[test]
     fn grep_searches_matching_lines() {
         let temp = tempfile::tempdir().unwrap();
-        std::fs::write(temp.path().join("a.rs"), "fn main() {}\nlet needle = true;\n").unwrap();
+        std::fs::write(
+            temp.path().join("a.rs"),
+            "fn main() {}\nlet needle = true;\n",
+        )
+        .unwrap();
         let mut env = super::ToolEnvironment::for_tests(temp.path());
 
         let result = super::execute_tool(

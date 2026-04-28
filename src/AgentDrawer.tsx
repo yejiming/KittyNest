@@ -220,7 +220,9 @@ export function AgentDrawer({ open, projects, onClose }: AgentDrawerProps) {
       return {
         ...message,
         status: event.type === "tool_end" ? "done" : message.status,
-        output: event.resultPreview ?? `${message.output ?? ""}${event.delta ?? ""}`,
+        output: event.type === "tool_end" && !message.output
+          ? event.resultPreview ?? ""
+          : `${message.output ?? ""}${event.delta ?? ""}`,
         resultPreview: event.resultPreview ?? message.resultPreview,
       };
     }));

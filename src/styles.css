@@ -1675,7 +1675,12 @@ select {
   min-height: 0;
   overflow: auto;
   padding: 16px 18px;
-  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.agent-message-list::-webkit-scrollbar {
+  display: none;
 }
 
 .agent-empty {

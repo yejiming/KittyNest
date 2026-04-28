@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -9,9 +9,13 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    assistant_context::{estimate_context, AgentStoredMessage, ThinkBlockStreamFilter, ThinkStreamEvent},
-    assistant_tools::{AgentTodo, PermissionDecision, ToolEnvironment},
+pub mod context;
+pub mod llm;
+pub mod tools;
+
+use self::{
+    context::{estimate_context, AgentStoredMessage, ThinkBlockStreamFilter, ThinkStreamEvent},
+    tools::{AgentTodo, PermissionDecision, ToolEnvironment},
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -97,6 +101,7 @@ struct AgentRegistryInner<E: AgentEventEmitter> {
 #[derive(Default)]
 struct AgentSession {
     cancelled: bool,
+    run_id: usize,
     messages: Vec<AgentStoredMessage>,
     llm_messages: Vec<serde_json::Value>,
     todos: Vec<AgentTodo>,
@@ -106,7 +111,7 @@ struct AgentSession {
 
 #[derive(Default)]
 struct PendingPermission {
-    response: Mutex<Option<crate::assistant_tools::PermissionDecision>>,
+    response: Mutex<Option<PermissionDecision>>,
     available: Condvar,
 }
 
@@ -132,12 +137,20 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
     }
 
     pub fn ensure_session(&self, session_id: &str) {
-        let mut sessions = self.inner.sessions.lock().expect("agent sessions lock poisoned");
+        let mut sessions = self
+            .inner
+            .sessions
+            .lock()
+            .expect("agent sessions lock poisoned");
         sessions.entry(session_id.into()).or_default();
     }
 
     pub fn stop_run(&self, session_id: &str) -> bool {
-        let mut sessions = self.inner.sessions.lock().expect("agent sessions lock poisoned");
+        let mut sessions = self
+            .inner
+            .sessions
+            .lock()
+            .expect("agent sessions lock poisoned");
         let session = sessions.entry(session_id.into()).or_default();
         session.cancelled = true;
         for pending in session.pending_permissions.values() {
@@ -146,7 +159,7 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
                 .lock()
                 .expect("permission response lock poisoned");
             if response.is_none() {
-                *response = Some(crate::assistant_tools::PermissionDecision {
+                *response = Some(PermissionDecision {
                     value: "deny".into(),
                     supplemental_info: "Run stopped.".into(),
                 });
@@ -183,7 +196,11 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
         supplemental_info: &str,
     ) -> bool {
         let pending = {
-            let sessions = self.inner.sessions.lock().expect("agent sessions lock poisoned");
+            let sessions = self
+                .inner
+                .sessions
+                .lock()
+                .expect("agent sessions lock poisoned");
             sessions
                 .get(session_id)
                 .and_then(|session| session.pending_permissions.get(request_id).cloned())
@@ -194,11 +211,10 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
         *pending
             .response
             .lock()
-            .expect("permission response lock poisoned") =
-            Some(crate::assistant_tools::PermissionDecision {
-                value: value.into(),
-                supplemental_info: supplemental_info.into(),
-            });
+            .expect("permission response lock poisoned") = Some(PermissionDecision {
+            value: value.into(),
+            supplemental_info: supplemental_info.into(),
+        });
         pending.available.notify_all();
         true
     }
@@ -210,7 +226,11 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
         answers: serde_json::Value,
     ) -> bool {
         let pending = {
-            let sessions = self.inner.sessions.lock().expect("agent sessions lock poisoned");
+            let sessions = self
+                .inner
+                .sessions
+                .lock()
+                .expect("agent sessions lock poisoned");
             sessions
                 .get(session_id)
                 .and_then(|session| session.pending_ask_user.get(request_id).cloned())
@@ -235,7 +255,11 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
         let request_id = self.next_request_id();
         let pending = Arc::new(PendingPermission::default());
         {
-            let mut sessions = self.inner.sessions.lock().expect("agent sessions lock poisoned");
+            let mut sessions = self
+                .inner
+                .sessions
+                .lock()
+                .expect("agent sessions lock poisoned");
             sessions
                 .entry(session_id.into())
                 .or_default()
@@ -266,10 +290,9 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
             Vec<serde_json::Value>,
             Vec<serde_json::Value>,
             &mut dyn FnMut(&str),
-        ) -> anyhow::Result<crate::assistant_llm::AssistantLlmResponse>,
+        ) -> anyhow::Result<llm::AssistantLlmResponse>,
     {
-        if let Err(error) =
-            self.run_inner(session_id, project_root, settings, user_input, &mut llm)
+        if let Err(error) = self.run_inner(session_id, project_root, settings, user_input, &mut llm)
         {
             self.emit_error(session_id, &error.to_string(), None);
         }
@@ -291,12 +314,9 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
                 settings,
                 &message,
                 move |messages, tools, on_token| {
-                    crate::assistant_llm::request_openai_stream(
-                        &request_settings,
-                        messages,
-                        tools,
-                        |token| on_token(token),
-                    )
+                    llm::request_openai_stream(&request_settings, messages, tools, |token| {
+                        on_token(token)
+                    })
                 },
             );
         });
@@ -315,9 +335,9 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
             Vec<serde_json::Value>,
             Vec<serde_json::Value>,
             &mut dyn FnMut(&str),
-        ) -> anyhow::Result<crate::assistant_llm::AssistantLlmResponse>,
+        ) -> anyhow::Result<llm::AssistantLlmResponse>,
     {
-        self.begin_user_turn(session_id, user_input);
+        let run_id = self.begin_user_turn(session_id, user_input);
         let system_prompt = assistant_system_prompt(&project_root);
         let max_context = if settings.max_context == 0 {
             128_000
@@ -326,13 +346,16 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
         };
 
         for _ in 0..50 {
+            if !self.is_current_run(session_id, run_id) {
+                return Ok(());
+            }
             if self.is_cancelled(session_id) {
                 self.emit_cancelled(session_id, &system_prompt, max_context);
                 return Ok(());
             }
 
             let messages = self.openai_messages(session_id, &system_prompt);
-            let tools = crate::assistant_tools::tool_schemas();
+            let tools = tools::tool_schemas();
             let mut think_filter = ThinkBlockStreamFilter::default();
             let token_registry = self.clone();
             let token_session_id = session_id.to_string();
@@ -345,14 +368,12 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
                             token_registry.emit(payload);
                         }
                         ThinkStreamEvent::ThinkingStatus(status) => {
-                            let mut payload =
-                                AgentEvent::new(&token_session_id, "thinking_status");
+                            let mut payload = AgentEvent::new(&token_session_id, "thinking_status");
                             payload.status = Some(status);
                             token_registry.emit(payload);
                         }
                         ThinkStreamEvent::ThinkingDelta(delta) => {
-                            let mut payload =
-                                AgentEvent::new(&token_session_id, "thinking_delta");
+                            let mut payload = AgentEvent::new(&token_session_id, "thinking_delta");
                             payload.delta = Some(delta);
                             token_registry.emit(payload);
                         }
@@ -361,6 +382,13 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
             };
 
             let response = llm(messages, tools, &mut on_token)?;
+            if !self.is_current_run(session_id, run_id) {
+                return Ok(());
+            }
+            if self.is_cancelled(session_id) {
+                self.emit_cancelled(session_id, &system_prompt, max_context);
+                return Ok(());
+            }
             if think_filter.needs_finish_event() {
                 let mut payload = AgentEvent::new(session_id, "thinking_status");
                 payload.status = Some("finished".into());
@@ -394,7 +422,8 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
                     payload.tool_call_id = Some(tool_call.id.clone());
                     payload.name = Some(tool_call.name.clone());
                     payload.arguments = Some(tool_call.arguments.clone());
-                    payload.summary = Some(summarize_tool_call(&tool_call.name, &tool_call.arguments));
+                    payload.summary =
+                        Some(summarize_tool_call(&tool_call.name, &tool_call.arguments));
                     self.emit(payload);
                 }
 
@@ -415,11 +444,15 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
                     ask_registry.request_ask_user_wait(&ask_session_id, questions)
                 });
 
-                let result = crate::assistant_tools::execute_tool(
-                    &tool_call.name,
-                    tool_call.arguments.clone(),
-                    &mut env,
-                );
+                let result =
+                    tools::execute_tool(&tool_call.name, tool_call.arguments.clone(), &mut env);
+                if !self.is_current_run(session_id, run_id) {
+                    return Ok(());
+                }
+                if self.is_cancelled(session_id) {
+                    self.emit_cancelled(session_id, &system_prompt, max_context);
+                    return Ok(());
+                }
                 self.set_todos(session_id, env.todos);
                 self.append_tool_result(session_id, &tool_call.id, &result);
 
@@ -453,20 +486,41 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
         Ok(())
     }
 
-    fn begin_user_turn(&self, session_id: &str, user_input: &str) {
-        let mut sessions = self.inner.sessions.lock().expect("agent sessions lock poisoned");
+    fn begin_user_turn(&self, session_id: &str, user_input: &str) -> usize {
+        let mut sessions = self
+            .inner
+            .sessions
+            .lock()
+            .expect("agent sessions lock poisoned");
         let session = sessions.entry(session_id.into()).or_default();
+        session.run_id += 1;
+        let run_id = session.run_id;
         session.cancelled = false;
+        prune_incomplete_tool_call_messages(&mut session.llm_messages);
         session
             .messages
             .push(AgentStoredMessage::new("user", user_input));
         session
             .llm_messages
             .push(serde_json::json!({"role": "user", "content": user_input}));
+        run_id
+    }
+
+    fn is_current_run(&self, session_id: &str, run_id: usize) -> bool {
+        self.inner
+            .sessions
+            .lock()
+            .expect("agent sessions lock poisoned")
+            .get(session_id)
+            .is_some_and(|session| session.run_id == run_id)
     }
 
     fn openai_messages(&self, session_id: &str, system_prompt: &str) -> Vec<serde_json::Value> {
-        let sessions = self.inner.sessions.lock().expect("agent sessions lock poisoned");
+        let sessions = self
+            .inner
+            .sessions
+            .lock()
+            .expect("agent sessions lock poisoned");
         let mut messages = vec![serde_json::json!({"role": "system", "content": system_prompt})];
         if let Some(session) = sessions.get(session_id) {
             messages.extend(session.llm_messages.clone());
@@ -475,7 +529,11 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
     }
 
     fn append_assistant_message(&self, session_id: &str, content: &str) {
-        let mut sessions = self.inner.sessions.lock().expect("agent sessions lock poisoned");
+        let mut sessions = self
+            .inner
+            .sessions
+            .lock()
+            .expect("agent sessions lock poisoned");
         let session = sessions.entry(session_id.into()).or_default();
         session
             .messages
@@ -489,9 +547,13 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
         &self,
         session_id: &str,
         content: &str,
-        tool_calls: &[crate::assistant_llm::AssistantToolCall],
+        tool_calls: &[llm::AssistantToolCall],
     ) {
-        let mut sessions = self.inner.sessions.lock().expect("agent sessions lock poisoned");
+        let mut sessions = self
+            .inner
+            .sessions
+            .lock()
+            .expect("agent sessions lock poisoned");
         let session = sessions.entry(session_id.into()).or_default();
         if !content.trim().is_empty() {
             session
@@ -519,9 +581,15 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
     }
 
     fn append_tool_result(&self, session_id: &str, tool_call_id: &str, result: &str) {
-        let mut sessions = self.inner.sessions.lock().expect("agent sessions lock poisoned");
+        let mut sessions = self
+            .inner
+            .sessions
+            .lock()
+            .expect("agent sessions lock poisoned");
         let session = sessions.entry(session_id.into()).or_default();
-        session.messages.push(AgentStoredMessage::new("tool", result));
+        session
+            .messages
+            .push(AgentStoredMessage::new("tool", result));
         session.llm_messages.push(serde_json::json!({
             "role": "tool",
             "tool_call_id": tool_call_id,
@@ -540,7 +608,11 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
     }
 
     fn set_todos(&self, session_id: &str, todos: Vec<AgentTodo>) {
-        let mut sessions = self.inner.sessions.lock().expect("agent sessions lock poisoned");
+        let mut sessions = self
+            .inner
+            .sessions
+            .lock()
+            .expect("agent sessions lock poisoned");
         sessions.entry(session_id.into()).or_default().todos = todos;
     }
 
@@ -552,7 +624,11 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
     ) -> PermissionDecision {
         let request_id = self.create_permission_request(session_id, title, description);
         let pending = {
-            let sessions = self.inner.sessions.lock().expect("agent sessions lock poisoned");
+            let sessions = self
+                .inner
+                .sessions
+                .lock()
+                .expect("agent sessions lock poisoned");
             sessions
                 .get(session_id)
                 .and_then(|session| session.pending_permissions.get(&request_id).cloned())
@@ -597,7 +673,11 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
         let request_id = self.next_request_id();
         let pending = Arc::new(PendingAskUser::default());
         {
-            let mut sessions = self.inner.sessions.lock().expect("agent sessions lock poisoned");
+            let mut sessions = self
+                .inner
+                .sessions
+                .lock()
+                .expect("agent sessions lock poisoned");
             sessions
                 .entry(session_id.into())
                 .or_default()
@@ -610,7 +690,10 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
         event.questions = Some(serde_json::Value::Array(questions));
         self.emit(event);
 
-        let mut response = pending.response.lock().expect("ask_user response lock poisoned");
+        let mut response = pending
+            .response
+            .lock()
+            .expect("ask_user response lock poisoned");
         while response.is_none() {
             response = pending
                 .available
@@ -700,6 +783,69 @@ fn strip_think_blocks(source: &str) -> String {
     result
 }
 
+fn prune_incomplete_tool_call_messages(messages: &mut Vec<serde_json::Value>) {
+    let mut remove = vec![false; messages.len()];
+    for index in 0..messages.len() {
+        if messages[index]
+            .get("role")
+            .and_then(serde_json::Value::as_str)
+            != Some("assistant")
+        {
+            continue;
+        }
+        let Some(tool_calls) = messages[index]
+            .get("tool_calls")
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+        let expected_ids = tool_calls
+            .iter()
+            .filter_map(|tool_call| tool_call.get("id").and_then(serde_json::Value::as_str))
+            .collect::<Vec<_>>();
+        if expected_ids.is_empty() {
+            continue;
+        }
+
+        let following_tool_ids = messages
+            .iter()
+            .skip(index + 1)
+            .take_while(|message| {
+                message.get("role").and_then(serde_json::Value::as_str) == Some("tool")
+            })
+            .filter_map(|message| {
+                message
+                    .get("tool_call_id")
+                    .and_then(serde_json::Value::as_str)
+            })
+            .collect::<HashSet<_>>();
+        if expected_ids
+            .iter()
+            .any(|tool_call_id| !following_tool_ids.contains(tool_call_id))
+        {
+            remove[index] = true;
+            for later in index + 1..messages.len() {
+                if messages[later]
+                    .get("role")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("tool")
+                {
+                    remove[later] = true;
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
+    let mut index = 0;
+    messages.retain(|_| {
+        let keep = !remove[index];
+        index += 1;
+        keep
+    });
+}
+
 fn summarize_tool_call(name: &str, arguments: &serde_json::Value) -> String {
     if let Some(object) = arguments.as_object() {
         if let Some(value) = object.values().next().and_then(serde_json::Value::as_str) {
@@ -775,7 +921,7 @@ mod tests {
             "hello",
             |_messages, _tools, on_token| {
                 on_token("Hello");
-                Ok(crate::assistant_llm::AssistantLlmResponse {
+                Ok(super::llm::AssistantLlmResponse {
                     content: "Hello".into(),
                     tool_calls: Vec::new(),
                 })
@@ -803,9 +949,9 @@ mod tests {
             |_messages, _tools, _on_token| {
                 rounds += 1;
                 if rounds == 1 {
-                    Ok(crate::assistant_llm::AssistantLlmResponse {
+                    Ok(super::llm::AssistantLlmResponse {
                         content: String::new(),
-                        tool_calls: vec![crate::assistant_llm::AssistantToolCall {
+                        tool_calls: vec![super::llm::AssistantToolCall {
                             id: "todo_1".into(),
                             name: "todo_write".into(),
                             arguments: serde_json::json!({
@@ -816,7 +962,7 @@ mod tests {
                         }],
                     })
                 } else {
-                    Ok(crate::assistant_llm::AssistantLlmResponse {
+                    Ok(super::llm::AssistantLlmResponse {
                         content: "Ready".into(),
                         tool_calls: Vec::new(),
                     })
@@ -827,5 +973,53 @@ mod tests {
         let events = emitter.events.lock().unwrap();
         assert!(events.iter().any(|event| event.event_type == "todo_update"));
         assert_eq!(events.last().unwrap().event_type, "done");
+    }
+
+    #[test]
+    fn stopped_tool_call_turn_is_removed_before_next_user_message() {
+        let registry = super::AgentRegistry::new_for_tests(VecEmitter::default());
+        let settings = crate::config::default_llm_settings();
+        let project_root = tempfile::tempdir().unwrap();
+        let stop_registry = registry.clone();
+
+        registry.run_with_llm_for_tests(
+            "session-1",
+            project_root.path().to_path_buf(),
+            settings.clone(),
+            "read a file",
+            move |_messages, _tools, _on_token| {
+                stop_registry.stop_run("session-1");
+                Ok(super::llm::AssistantLlmResponse {
+                    content: String::new(),
+                    tool_calls: vec![super::llm::AssistantToolCall {
+                        id: "call_read".into(),
+                        name: "read_file".into(),
+                        arguments: serde_json::json!({"file_path": "src/App.tsx"}),
+                    }],
+                })
+            },
+        );
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let captured_messages = Arc::clone(&captured);
+        registry.run_with_llm_for_tests(
+            "session-1",
+            project_root.path().to_path_buf(),
+            settings,
+            "try again",
+            move |messages, _tools, _on_token| {
+                *captured_messages.lock().unwrap() = messages;
+                Ok(super::llm::AssistantLlmResponse {
+                    content: "ok".into(),
+                    tool_calls: Vec::new(),
+                })
+            },
+        );
+
+        let messages = captured.lock().unwrap();
+        assert!(!messages
+            .iter()
+            .any(|message| message.get("tool_calls").is_some()));
+        assert_eq!(messages.last().unwrap()["content"], "try again");
     }
 }

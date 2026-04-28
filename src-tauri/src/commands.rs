@@ -19,7 +19,9 @@ impl crate::assistant::AgentEventEmitter for TauriAgentEmitter {
     }
 }
 
-fn assistant_registry(app: tauri::AppHandle) -> &'static crate::assistant::AgentRegistry<TauriAgentEmitter> {
+fn assistant_registry(
+    app: tauri::AppHandle,
+) -> &'static crate::assistant::AgentRegistry<TauriAgentEmitter> {
     static REGISTRY: OnceLock<crate::assistant::AgentRegistry<TauriAgentEmitter>> = OnceLock::new();
     REGISTRY.get_or_init(|| crate::assistant::AgentRegistry::new(TauriAgentEmitter { app }))
 }
@@ -461,9 +463,8 @@ pub fn get_app_state_with_roots(
     codex_sessions_root: std::path::PathBuf,
 ) -> anyhow::Result<AppStateDto> {
     crate::config::initialize_workspace(paths)?;
-    let mut connection = crate::db::open(paths)?;
+    let connection = crate::db::open(paths)?;
     crate::db::migrate(&connection)?;
-    scan_sources_into_db(&mut connection, &claude_root, &codex_sessions_root)?;
     app_state_from_db(paths, &connection, &claude_root, &codex_sessions_root)
 }
 
@@ -667,6 +668,7 @@ mod tests {
     use super::{
         get_app_state_with_roots, get_cached_app_state_with_roots, read_markdown_file_inner,
         reset_memories_inner, reset_projects_inner, reset_sessions_inner, reset_tasks_inner,
+        scan_sources_into_db,
     };
     use crate::{
         memory::MemoryEntity,
@@ -674,7 +676,7 @@ mod tests {
     };
 
     #[test]
-    fn get_app_state_discovers_existing_claude_and_codex_sessions_on_load() {
+    fn get_app_state_does_not_scan_sources_on_load() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
 
@@ -708,16 +710,9 @@ mod tests {
             get_app_state_with_roots(&paths, temp.path().join("claude"), codex_sessions_dir)
                 .unwrap();
 
-        assert_eq!(state.stats.sessions, 2);
-        assert_eq!(state.stats.active_projects, 2);
-        assert!(state
-            .projects
-            .iter()
-            .any(|project| project.slug == "ClaudeProject"));
-        assert!(state
-            .projects
-            .iter()
-            .any(|project| project.slug == "CodexProject"));
+        assert_eq!(state.stats.sessions, 0);
+        assert_eq!(state.stats.active_projects, 0);
+        assert!(state.projects.is_empty());
     }
 
     #[test]
@@ -737,7 +732,11 @@ mod tests {
                 workdir: project_dir.to_string_lossy().to_string(),
                 created_at: "2026-04-28T00:00:00Z".into(),
                 updated_at: "2026-04-28T00:00:01Z".into(),
-                raw_path: temp.path().join("session.jsonl").to_string_lossy().to_string(),
+                raw_path: temp
+                    .path()
+                    .join("session.jsonl")
+                    .to_string_lossy()
+                    .to_string(),
                 messages: vec![RawMessage {
                     role: "user".into(),
                     content: "hello".into(),
@@ -794,11 +793,21 @@ mod tests {
             codex_sessions_dir.clone(),
         )
         .unwrap();
+        crate::config::initialize_workspace(&paths).unwrap();
+        let mut connection = crate::db::open(&paths).unwrap();
+        crate::db::migrate(&connection).unwrap();
+        let (_, _, inserted) = scan_sources_into_db(
+            &mut connection,
+            &temp.path().join("claude"),
+            &codex_sessions_dir,
+        )
+        .unwrap();
         let scanned =
-            get_app_state_with_roots(&paths, temp.path().join("claude"), codex_sessions_dir)
+            get_cached_app_state_with_roots(&paths, temp.path().join("claude"), codex_sessions_dir)
                 .unwrap();
 
         assert_eq!(cached.stats.sessions, 0);
+        assert_eq!(inserted, 1);
         assert_eq!(scanned.stats.sessions, 1);
     }
 

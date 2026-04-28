@@ -1391,6 +1391,44 @@ describe("assistant drawer", () => {
     expect(screen.getByText("Hello")).toBeInTheDocument();
   });
 
+  it("keeps finished thinking and tool cards expandable in the chat", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue({
+      ...state,
+      projects: [{ ...state.projects[0], reviewStatus: "reviewed" }],
+    });
+
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: /^assistant$/i }));
+    const sessionId = window.sessionStorage.getItem("kittynest:agent-session") ?? "";
+
+    act(() => {
+      emitAgentEvent({ sessionId, type: "thinking_status", status: "running" });
+      emitAgentEvent({ sessionId, type: "thinking_delta", delta: "finished reasoning" });
+      emitAgentEvent({ sessionId, type: "thinking_status", status: "finished" });
+      emitAgentEvent({
+        sessionId,
+        type: "tool_start",
+        toolCallId: "call_1",
+        name: "read_file",
+        arguments: { file_path: "src/App.tsx" },
+        summary: "read_file src/App.tsx",
+      });
+      emitAgentEvent({
+        sessionId,
+        type: "tool_end",
+        toolCallId: "call_1",
+        status: "done",
+        resultPreview: "1\timport React",
+      });
+      emitAgentEvent({ sessionId, type: "done", reply: "ok" });
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: /thinking/i }));
+    expect(screen.getAllByText(/finished reasoning/i).length).toBeGreaterThan(1);
+    await userEvent.click(screen.getByRole("button", { name: /read_file src\/app\.tsx/i }));
+    expect(screen.getByText(/import React/i)).toBeInTheDocument();
+  });
+
   it("resolves permission cards and removes them after selection", async () => {
     vi.spyOn(api, "getAppState").mockResolvedValue({
       ...state,

@@ -76,7 +76,9 @@ where
             content.push_str(token);
             on_token(token);
         }
-        let Some(tool_calls) = delta.get("tool_calls").and_then(serde_json::Value::as_array)
+        let Some(tool_calls) = delta
+            .get("tool_calls")
+            .and_then(serde_json::Value::as_array)
         else {
             continue;
         };
@@ -95,7 +97,9 @@ where
             if let Some(name) = function.get("name").and_then(serde_json::Value::as_str) {
                 entry.name = name.into();
             }
-            if let Some(arguments) = function.get("arguments").and_then(serde_json::Value::as_str)
+            if let Some(arguments) = function
+                .get("arguments")
+                .and_then(serde_json::Value::as_str)
             {
                 entry.arguments.push_str(arguments);
             }
@@ -105,8 +109,8 @@ where
     let tool_calls = tool_call_map
         .into_values()
         .map(|raw| {
-            let arguments = serde_json::from_str(&raw.arguments)
-                .unwrap_or_else(|_| serde_json::json!({}));
+            let arguments =
+                serde_json::from_str(&raw.arguments).unwrap_or_else(|_| serde_json::json!({}));
             AssistantToolCall {
                 id: raw.id,
                 name: raw.name,
@@ -189,7 +193,9 @@ mod tests {
         let body = super::openai_stream_body(
             &settings,
             vec![serde_json::json!({"role": "user", "content": "hello"})],
-            vec![serde_json::json!({"type": "function", "function": {"name": "read_file", "parameters": {"type": "object"}}})],
+            vec![
+                serde_json::json!({"type": "function", "function": {"name": "read_file", "parameters": {"type": "object"}}}),
+            ],
         );
 
         assert_eq!(body["stream"], true);
