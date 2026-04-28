@@ -1225,3 +1225,40 @@ describe("KittyNest dashboard", () => {
     expect(screen.getByRole("button", { name: "OpenRouter Draft" })).toBeInTheDocument();
   });
 });
+
+describe("agent drawer helpers", () => {
+  it("normalizes context snapshots with one decimal shares", async () => {
+    const { normalizeAgentContext, contextShareLabel } = await import("./agentTypes");
+    const context = normalizeAgentContext({
+      usedTokens: 1000,
+      maxTokens: 4000,
+      remainingTokens: 3000,
+      thinkingTokens: 125,
+      breakdown: { system: 250, user: 250, assistant: 300, tool: 75 },
+    });
+
+    expect(context.usedTokens).toBe(1000);
+    expect(contextShareLabel(context, "system")).toBe("25.0%");
+    expect(contextShareLabel(context, "thinking")).toBe("12.5%");
+    expect(contextShareLabel(context, "tool")).toBe("7.5%");
+  });
+
+  it("creates stable ids for tool events using the tool call id", async () => {
+    const { messageFromAgentEvent } = await import("./agentTypes");
+    const message = messageFromAgentEvent({
+      sessionId: "session-1",
+      type: "tool_start",
+      toolCallId: "call_read",
+      name: "read_file",
+      arguments: { file_path: "src/App.tsx" },
+      summary: "read_file src/App.tsx",
+    });
+
+    expect(message).toMatchObject({
+      id: "tool-call_read",
+      role: "tool",
+      toolCallId: "call_read",
+      name: "read_file",
+    });
+  });
+});
