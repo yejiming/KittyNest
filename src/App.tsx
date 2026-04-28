@@ -1,5 +1,6 @@
 import {
   Activity,
+  Bot,
   BrainCircuit,
   CheckCircle2,
   CircleStop,
@@ -60,6 +61,7 @@ import {
   isTauriRuntime,
   stopJob,
 } from "./api";
+import { AgentDrawer } from "./AgentDrawer";
 import type {
   AppState,
   LlmModelSettings,
@@ -93,6 +95,7 @@ export default function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState("Tauri commands idle");
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [agentDrawerOpen, setAgentDrawerOpen] = useState(false);
   const tauriRuntime = isTauriRuntime();
 
   const refresh = async () => {
@@ -255,12 +258,10 @@ export default function App() {
         <NavButton active={view === "tasks" || view === "taskDetail"} icon={<CircleDot size={19} />} label="Tasks" onClick={() => setView("tasks")} />
         <NavButton active={view === "memories"} icon={<BrainCircuit size={19} />} label="Memory" onClick={() => setView("memories")} />
         <NavButton active={view === "settings"} icon={<Settings size={19} />} label="Settings" onClick={() => setView("settings")} />
-        <div className="ledger">
-          <ShieldCheck size={24} />
-          <strong>Local Ledger</strong>
-          <span>SQLite synced</span>
-          <small>{state.dataDir}</small>
-        </div>
+        <button className="assistant-launch" aria-label="Assistant" onClick={() => setAgentDrawerOpen(true)}>
+          <Bot size={19} />
+          <span>Assistant</span>
+        </button>
       </aside>
 
       <main className="workspace">
@@ -437,6 +438,7 @@ export default function App() {
         <span><Database size={16} /> SQLite synced</span>
         <span><Activity size={16} /> {notice}</span>
       </footer>
+      <AgentDrawer open={agentDrawerOpen} projects={state.projects} onClose={() => setAgentDrawerOpen(false)} />
     </div>
   );
 }

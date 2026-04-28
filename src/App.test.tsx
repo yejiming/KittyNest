@@ -1290,3 +1290,50 @@ describe("agent drawer helpers", () => {
     ).resolves.toEqual({ resolved: true });
   });
 });
+
+describe("assistant drawer", () => {
+  beforeEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    window.sessionStorage.clear();
+  });
+
+  it("opens assistant drawer from the sidebar and lists reviewed projects", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue({
+      ...state,
+      projects: [
+        { ...state.projects[0], reviewStatus: "reviewed" },
+        { ...state.projects[0], slug: "Draft", displayTitle: "Draft", reviewStatus: "not_reviewed" },
+      ],
+    });
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /^assistant$/i }));
+    expect(screen.getByRole("complementary", { name: /agent assistant/i })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /assistant settings/i }));
+    expect(screen.getByRole("tab", { name: /task assistant/i })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: /project/i })).toHaveTextContent("KittyNest");
+    expect(screen.getByRole("combobox", { name: /project/i })).not.toHaveTextContent("Draft");
+  });
+
+  it("sends and stops assistant runs", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue({
+      ...state,
+      projects: [{ ...state.projects[0], reviewStatus: "reviewed" }],
+    });
+    const start = vi.spyOn(api as ApiWithReviewQueue, "startAgentRun").mockResolvedValue({ started: true });
+    const stop = vi.spyOn(api as ApiWithReviewQueue, "stopAgentRun").mockResolvedValue({ stopped: true });
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /^assistant$/i }));
+    await userEvent.type(screen.getByLabelText(/message task assistant/i), "Explain the project");
+    await userEvent.click(screen.getByRole("button", { name: /send/i }));
+
+    await waitFor(() => expect(start).toHaveBeenCalledWith(expect.any(String), "KittyNest", "Explain the project"));
+    await userEvent.click(screen.getByRole("button", { name: /stop/i }));
+    await waitFor(() => expect(stop).toHaveBeenCalledWith(expect.any(String)));
+  });
+});
