@@ -44,6 +44,7 @@ pub struct ToolEnvironment {
     pub todos: Vec<AgentTodo>,
     pub permission_requests: Vec<PermissionRequestRecord>,
     permission_decisions: Option<Arc<Mutex<Vec<String>>>>,
+    permission_handler: Option<Box<dyn FnMut(&str, &str) -> PermissionDecision + Send>>,
     ask_user_handler: Option<Box<dyn FnMut(Vec<serde_json::Value>) -> serde_json::Value + Send>>,
 }
 
@@ -54,6 +55,7 @@ impl ToolEnvironment {
             todos: Vec::new(),
             permission_requests: Vec::new(),
             permission_decisions: None,
+            permission_handler: None,
             ask_user_handler: None,
         }
     }
@@ -76,11 +78,21 @@ impl ToolEnvironment {
         self.ask_user_handler = Some(Box::new(handler));
     }
 
+    pub fn set_permission_handler<F>(&mut self, handler: F)
+    where
+        F: FnMut(&str, &str) -> PermissionDecision + Send + 'static,
+    {
+        self.permission_handler = Some(Box::new(handler));
+    }
+
     pub fn request_permission(&mut self, title: &str, description: &str) -> PermissionDecision {
         self.permission_requests.push(PermissionRequestRecord {
             title: title.into(),
             description: description.into(),
         });
+        if let Some(handler) = self.permission_handler.as_mut() {
+            return handler(title, description);
+        }
         let value = self
             .permission_decisions
             .as_ref()
