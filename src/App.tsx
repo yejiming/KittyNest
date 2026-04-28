@@ -99,6 +99,7 @@ export default function App() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [agentDrawerOpen, setAgentDrawerOpen] = useState(false);
   const [loadedAgentSession, setLoadedAgentSession] = useState<SavedAgentSession | null>(null);
+  const [agentRefreshSignal, setAgentRefreshSignal] = useState(0);
   const tauriRuntime = isTauriRuntime();
 
   const refresh = async () => {
@@ -423,7 +424,10 @@ export default function App() {
           />
         )}
         {view === "settings" && <SettingsView state={state} onSave={(settings) => runAction("Save settings", async () => {
+          const assistantModelChanged =
+            (state.llmSettings.scenarioModels?.assistantModel ?? "") !== (settings.scenarioModels?.assistantModel ?? "");
           await saveLlmSettings(settings);
+          if (assistantModelChanged) setAgentRefreshSignal((current) => current + 1);
           return "LLM settings saved";
         }, "cached")}
           busy={busy}
@@ -455,6 +459,7 @@ export default function App() {
         open={agentDrawerOpen}
         projects={state.projects}
         loadedSession={loadedAgentSession}
+        refreshSignal={agentRefreshSignal}
         onClose={() => setAgentDrawerOpen(false)}
         onSaved={() => void refresh()}
       />

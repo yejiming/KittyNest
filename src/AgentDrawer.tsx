@@ -48,11 +48,12 @@ interface AgentDrawerProps {
   open: boolean;
   projects: ProjectRecord[];
   loadedSession?: SavedAgentSession | null;
+  refreshSignal?: number;
   onClose: () => void;
   onSaved?: () => void;
 }
 
-export function AgentDrawer({ open, projects, loadedSession, onClose, onSaved }: AgentDrawerProps) {
+export function AgentDrawer({ open, projects, loadedSession, refreshSignal = 0, onClose, onSaved }: AgentDrawerProps) {
   const reviewedProjects = useMemo(
     () => projects.filter((project) => project.reviewStatus === "reviewed"),
     [projects],
@@ -68,6 +69,7 @@ export function AgentDrawer({ open, projects, loadedSession, onClose, onSaved }:
   const [todos, setTodos] = useState<AgentTodoItem[]>([]);
   const [todosOpen, setTodosOpen] = useState(true);
   const messageCounter = useRef(0);
+  const lastRefreshSignal = useRef(refreshSignal);
 
   useEffect(() => {
     if (reviewedProjects.length === 0) {
@@ -342,6 +344,18 @@ export function AgentDrawer({ open, projects, loadedSession, onClose, onSaved }:
     setRunning(false);
   }
 
+  useEffect(() => {
+    if (refreshSignal === lastRefreshSignal.current) return;
+    lastRefreshSignal.current = refreshSignal;
+    void refreshSession();
+  }, [refreshSignal]);
+
+  function selectProject(projectSlug: string) {
+    if (projectSlug === selectedProject) return;
+    setSelectedProject(projectSlug);
+    void refreshSession();
+  }
+
   async function saveSession() {
     if (!selectedProject) return;
     const timeline: AgentTimelinePayload = {
@@ -545,7 +559,7 @@ export function AgentDrawer({ open, projects, loadedSession, onClose, onSaved }:
               <select
                 aria-label="Project"
                 disabled={reviewedProjects.length === 0}
-                onChange={(event) => setSelectedProject(event.target.value)}
+                onChange={(event) => selectProject(event.target.value)}
                 value={selectedProject}
               >
                 {reviewedProjects.length === 0 && <option value="">No reviewed projects</option>}

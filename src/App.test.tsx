@@ -1167,6 +1167,63 @@ describe("KittyNest dashboard", () => {
     expect(getCachedState).toHaveBeenCalledTimes(1);
   });
 
+  it("refreshes the assistant session after saving a changed assistant model", async () => {
+    const settingsState = {
+      ...state,
+      projects: [{ ...state.projects[0], reviewStatus: "reviewed" }],
+      llmSettings: {
+        ...state.llmSettings,
+        models: [
+          {
+            id: "openrouter-fast",
+            provider: "OpenRouter",
+            remark: "Fast",
+            baseUrl: "https://openrouter.ai/api/v1",
+            interface: "openai",
+            model: "openai/gpt-4o-mini",
+            apiKey: "sk-openrouter",
+            maxContext: 64000,
+            maxTokens: 2048,
+            temperature: 0.3,
+          },
+          {
+            id: "anthropic-deep",
+            provider: "Anthropic",
+            remark: "Deep",
+            baseUrl: "https://api.anthropic.com",
+            interface: "anthropic",
+            model: "claude-3-5-sonnet-latest",
+            apiKey: "sk-anthropic",
+            maxContext: 200000,
+            maxTokens: 8192,
+            temperature: 0.1,
+          },
+        ],
+        scenarioModels: {
+          defaultModel: "openrouter-fast",
+          projectModel: "",
+          sessionModel: "",
+          memoryModel: "",
+          assistantModel: "",
+        },
+      },
+    } as AppState;
+    vi.spyOn(api, "getAppState").mockResolvedValue(settingsState);
+    vi.spyOn(api as ApiWithReviewQueue, "getCachedAppState").mockResolvedValue(settingsState);
+    vi.spyOn(api, "saveLlmSettings").mockResolvedValue({ saved: true });
+    const clearAgentSession = vi
+      .spyOn(api as ApiWithReviewQueue, "clearAgentSession")
+      .mockResolvedValue({ cleared: true });
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /^settings$/i }));
+    await userEvent.selectOptions(screen.getByLabelText(/assistant model/i), "anthropic-deep");
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => expect(clearAgentSession).toHaveBeenCalledTimes(1));
+  });
+
   it("manages model list, LLM settings, global limits, and scenario model choices", async () => {
     const settingsState = {
       ...state,
@@ -1405,6 +1462,27 @@ describe("assistant drawer", () => {
     expect(screen.getByRole("tab", { name: /task assistant/i })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: /project/i })).toHaveTextContent("KittyNest");
     expect(screen.getByRole("combobox", { name: /project/i })).not.toHaveTextContent("Draft");
+  });
+
+  it("refreshes the assistant session when switching drawer project", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue({
+      ...state,
+      projects: [
+        { ...state.projects[0], reviewStatus: "reviewed" },
+        { ...state.projects[0], slug: "Second", displayTitle: "Second", reviewStatus: "reviewed" },
+      ],
+    });
+    const clearAgentSession = vi
+      .spyOn(api as ApiWithReviewQueue, "clearAgentSession")
+      .mockResolvedValue({ cleared: true });
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /^assistant$/i }));
+    await userEvent.click(screen.getByRole("button", { name: /assistant settings/i }));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: /project/i }), "Second");
+
+    await waitFor(() => expect(clearAgentSession).toHaveBeenCalledTimes(1));
   });
 
   it("sends and stops assistant runs", async () => {
