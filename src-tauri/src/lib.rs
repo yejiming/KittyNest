@@ -1,4 +1,5 @@
 pub mod analysis;
+pub mod assistant;
 pub mod assistant_context;
 pub mod assistant_llm;
 pub mod assistant_tools;
