@@ -140,6 +140,20 @@ pub fn request_openai_stream<F>(
 where
     F: FnMut(&str),
 {
+    let paths = crate::config::default_paths();
+    request_openai_stream_with_log_dir(settings, messages, tools, on_token, &paths.data_dir)
+}
+
+fn request_openai_stream_with_log_dir<F>(
+    settings: &crate::models::LlmSettings,
+    messages: Vec<serde_json::Value>,
+    tools: Vec<serde_json::Value>,
+    on_token: F,
+    log_data_dir: &std::path::Path,
+) -> anyhow::Result<AssistantLlmResponse>
+where
+    F: FnMut(&str),
+{
     if settings.interface != "openai" {
         anyhow::bail!("Task Assistant currently requires an OpenAI-compatible Assistant model");
     }
@@ -151,12 +165,40 @@ where
     let response = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(300))
         .build()?
-        .post(endpoint)
+        .post(&endpoint)
         .bearer_auth(&settings.api_key)
         .json(&body)
-        .send()?
-        .error_for_status()?;
+        .send()?;
+    let status = response.status();
+    if !status.is_success() {
+        let response_body = response
+            .text()
+            .unwrap_or_else(|error| format!("Failed to read response body: {error}"));
+        log_http_error(settings, &endpoint, status, &body, &response_body, log_data_dir);
+        anyhow::bail!("HTTP status {status} for url ({endpoint})");
+    }
     parse_openai_sse(response, on_token)
+}
+
+fn log_http_error(
+    settings: &crate::models::LlmSettings,
+    endpoint: &str,
+    status: reqwest::StatusCode,
+    request_body: &serde_json::Value,
+    response_body: &str,
+    log_data_dir: &std::path::Path,
+) {
+    crate::utils::append_error_log(
+        log_data_dir,
+        "Assistant LLM HTTP error",
+        &format!(
+            "stage: assistant_llm\nprovider: {}\nmodel: {}\nendpoint: {endpoint}\nstatus: {status}\nrequest_body:\n{}\nresponse_body:\n{}",
+            settings.provider,
+            settings.model,
+            serde_json::to_string_pretty(request_body).unwrap_or_else(|_| request_body.to_string()),
+            response_body
+        ),
+    );
 }
 
 pub fn request_openai_json(
@@ -266,5 +308,55 @@ mod tests {
         assert_eq!(body["max_tokens"], 123);
         assert!(body.get("max_completion_tokens").is_none());
         assert_eq!(body["tools"][0]["function"]["name"], "read_file");
+    }
+
+    #[test]
+    fn stream_request_logs_http_error_response_body() {
+        let temp = tempfile::tempdir().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = std::io::Read::read(&mut stream, &mut request);
+            let body = r#"{"error":{"message":"tools payload is invalid"}}"#;
+            let response = format!(
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body,
+            );
+            std::io::Write::write_all(&mut stream, response.as_bytes()).unwrap();
+        });
+        let mut settings = crate::config::default_llm_settings();
+        settings.provider = "DeepSeek".into();
+        settings.base_url = format!("http://{address}/v1");
+        settings.api_key = "test-key".into();
+        settings.model = "deepseek-chat".into();
+
+        let error = super::request_openai_stream_with_log_dir(
+            &settings,
+            vec![serde_json::json!({"role": "user", "content": "hello"})],
+            vec![serde_json::json!({"type": "function", "function": {"name": "read_file", "parameters": {"type": "object"}}})],
+            |_| {},
+            temp.path(),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("400"));
+        let log_path = std::fs::read_dir(temp.path().join("logs"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("error-") && name.ends_with(".log"))
+            })
+            .unwrap();
+        let log = std::fs::read_to_string(log_path).unwrap();
+        assert!(log.contains("Assistant LLM HTTP error"));
+        assert!(log.contains("DeepSeek"));
+        assert!(log.contains("400 Bad Request"));
+        assert!(log.contains("tools payload is invalid"));
     }
 }

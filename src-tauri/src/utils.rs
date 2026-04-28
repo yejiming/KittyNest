@@ -4,6 +4,24 @@ pub fn now_rfc3339() -> String {
     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
+pub fn append_error_log(data_dir: &std::path::Path, title: &str, details: &str) {
+    let now = now_rfc3339();
+    let date = now.get(..10).unwrap_or("unknown-date");
+    let logs_dir = data_dir.join("logs");
+    let log_path = logs_dir.join(format!("error-{date}.log"));
+    let entry = format!("[{now}] {title}\n{details}\n\n");
+    if std::fs::create_dir_all(&logs_dir).is_ok() {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+        {
+            use std::io::Write;
+            let _ = file.write_all(entry.as_bytes());
+        }
+    }
+}
+
 pub fn project_slug_from_workdir(workdir: &str) -> String {
     let name = std::path::Path::new(workdir)
         .file_name()
