@@ -2053,6 +2053,77 @@ select {
   justify-content: space-between;
 }
 
+.agent-modal-backdrop.page-centered {
+  justify-content: center;
+  padding-right: 0;
+}
+
+.agent-task-modal {
+  background: rgba(6, 16, 22, 0.98);
+  border: 1px solid rgba(116, 255, 241, 0.28);
+  border-radius: 8px;
+  box-shadow: 0 20px 80px rgba(0, 0, 0, 0.55);
+  color: #dffaff;
+  display: grid;
+  gap: 14px;
+  max-height: min(620px, calc(100vh - 48px));
+  max-width: min(720px, calc(100vw - 36px));
+  padding: 18px;
+  width: 640px;
+}
+
+.agent-task-modal header,
+.agent-task-modal footer {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.agent-task-modal h2 {
+  margin: 0 0 10px;
+}
+
+.agent-task-modal-body {
+  min-height: 0;
+}
+
+.agent-task-description-scroll {
+  border-top: 1px solid rgba(116, 255, 241, 0.16);
+  max-height: 390px;
+  overflow: auto;
+  padding-top: 12px;
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.agent-task-description-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.agent-task-description-scroll p:first-child {
+  margin-top: 0;
+}
+
+.agent-task-modal footer {
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.agent-task-modal footer button {
+  background: rgba(0, 216, 255, 0.1);
+  border: 1px solid rgba(116, 255, 241, 0.28);
+  border-radius: 999px;
+  color: #dffaff;
+  min-height: 34px;
+  padding: 0 14px;
+}
+
+.agent-task-modal footer button:last-child {
+  background: rgba(127, 255, 94, 0.14);
+  border-color: rgba(127, 255, 94, 0.32);
+  color: #bcffd0;
+}
+
 .agent-tabs {
   display: flex;
 }

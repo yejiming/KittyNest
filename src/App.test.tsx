@@ -38,6 +38,11 @@ type ApiWithReviewQueue = typeof api & {
     requestId: string,
     answers: Record<string, unknown>,
   ) => Promise<{ resolved: boolean }>;
+  resolveAgentCreateTask: (
+    sessionId: string,
+    requestId: string,
+    accepted: boolean,
+  ) => Promise<{ resolved: boolean }>;
   saveAgentSession: (
     sessionId: string,
     projectSlug: string,
@@ -1483,6 +1488,41 @@ describe("assistant drawer", () => {
     await userEvent.selectOptions(screen.getByRole("combobox", { name: /project/i }), "Second");
 
     await waitFor(() => expect(clearAgentSession).toHaveBeenCalledTimes(1));
+  });
+
+  it("shows a page-centered create task proposal modal and accepts it", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue({
+      ...state,
+      projects: [{ ...state.projects[0], reviewStatus: "reviewed" }],
+    });
+    const resolveCreateTask = vi
+      .spyOn(api as ApiWithReviewQueue, "resolveAgentCreateTask")
+      .mockResolvedValue({ resolved: true });
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /^assistant$/i }));
+    const sessionId = window.sessionStorage.getItem("kittynest:agent-session") ?? "";
+    act(() => {
+      window.dispatchEvent(new CustomEvent("kittynest-agent-event", {
+        detail: {
+          type: "create_task_request",
+          sessionId,
+          requestId: "create-task-1",
+          title: "Drawer Task",
+          description: "Build **Drawer** task flow.",
+        },
+      }));
+    });
+
+    const modal = await screen.findByRole("dialog", { name: /create task/i });
+    expect(modal).toHaveTextContent("Drawer Task");
+    expect(await screen.findByText("Drawer", { selector: "strong" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /^accept$/i }));
+
+    await waitFor(() => expect(resolveCreateTask).toHaveBeenCalledWith(sessionId, "create-task-1", true));
+    expect(screen.queryByRole("dialog", { name: /create task/i })).not.toBeInTheDocument();
   });
 
   it("sends and stops assistant runs", async () => {

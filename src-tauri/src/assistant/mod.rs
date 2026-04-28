@@ -107,6 +107,7 @@ struct AgentSession {
     todos: Vec<AgentTodo>,
     pending_permissions: HashMap<String, Arc<PendingPermission>>,
     pending_ask_user: HashMap<String, Arc<PendingAskUser>>,
+    pending_create_task: HashMap<String, Arc<PendingAskUser>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
@@ -292,6 +293,35 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
             .response
             .lock()
             .expect("ask_user response lock poisoned") = Some(answers);
+        pending.available.notify_all();
+        true
+    }
+
+    pub fn resolve_create_task(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        accepted: bool,
+    ) -> bool {
+        let pending = {
+            let sessions = self
+                .inner
+                .sessions
+                .lock()
+                .expect("agent sessions lock poisoned");
+            sessions
+                .get(session_id)
+                .and_then(|session| session.pending_create_task.get(request_id).cloned())
+        };
+        let Some(pending) = pending else {
+            return false;
+        };
+        *pending
+            .response
+            .lock()
+            .expect("create_task response lock poisoned") = Some(serde_json::json!({
+            "accepted": accepted
+        }));
         pending.available.notify_all();
         true
     }
@@ -489,6 +519,7 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
 
                 let mut env =
                     ToolEnvironment::new(project_root.clone(), project_summary_root.clone());
+                env.session_id = session_id.to_string();
                 env.todos = self.todos(session_id);
                 let permission_registry = self.clone();
                 let permission_session_id = session_id.to_string();
@@ -503,6 +534,11 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
                 let ask_session_id = session_id.to_string();
                 env.set_ask_user_handler(move |questions| {
                     ask_registry.request_ask_user_wait(&ask_session_id, questions)
+                });
+                let create_task_registry = self.clone();
+                let create_task_session_id = session_id.to_string();
+                env.set_create_task_handler(move |proposal| {
+                    create_task_registry.request_create_task_wait(&create_task_session_id, proposal)
                 });
 
                 let result =
@@ -529,6 +565,7 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
 
                     let mut end = AgentEvent::new(session_id, "tool_end");
                     end.tool_call_id = Some(tool_call.id);
+                    end.name = Some(tool_call.name.clone());
                     end.status = Some(if result.starts_with("Error") {
                         "error".into()
                     } else {
@@ -772,6 +809,62 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
             session.pending_ask_user.remove(&request_id);
         }
         answers
+    }
+
+    fn request_create_task_wait(
+        &self,
+        session_id: &str,
+        proposal: serde_json::Value,
+    ) -> serde_json::Value {
+        let request_id = self.next_request_id();
+        let pending = Arc::new(PendingAskUser::default());
+        {
+            let mut sessions = self
+                .inner
+                .sessions
+                .lock()
+                .expect("agent sessions lock poisoned");
+            sessions
+                .entry(session_id.into())
+                .or_default()
+                .pending_create_task
+                .insert(request_id.clone(), pending.clone());
+        }
+        let mut event = AgentEvent::new(session_id, "create_task_request");
+        event.request_id = Some(request_id.clone());
+        event.title = proposal
+            .get("taskName")
+            .and_then(serde_json::Value::as_str)
+            .map(ToString::to_string);
+        event.description = proposal
+            .get("taskDescription")
+            .and_then(serde_json::Value::as_str)
+            .map(ToString::to_string);
+        self.emit(event);
+
+        let mut response = pending
+            .response
+            .lock()
+            .expect("create_task response lock poisoned");
+        while response.is_none() {
+            response = pending
+                .available
+                .wait(response)
+                .expect("create_task response lock poisoned");
+        }
+        let answer = response
+            .take()
+            .unwrap_or_else(|| serde_json::json!({"accepted": false}));
+        if let Some(session) = self
+            .inner
+            .sessions
+            .lock()
+            .expect("agent sessions lock poisoned")
+            .get_mut(session_id)
+        {
+            session.pending_create_task.remove(&request_id);
+        }
+        answer
     }
 
     fn emit_cancelled(&self, session_id: &str, system_prompt: &str, max_context: usize) {

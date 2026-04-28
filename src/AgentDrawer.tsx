@@ -18,6 +18,7 @@ import {
   isTauriRuntime,
   clearAgentSession,
   resolveAgentAskUser,
+  resolveAgentCreateTask,
   resolveAgentPermission,
   saveAgentSession,
   startAgentRun,
@@ -44,6 +45,13 @@ const sessionStorageKey = "kittynest:agent-session";
 
 const emptyContext = normalizeAgentContext({});
 
+interface CreateTaskProposal {
+  sessionId: string;
+  requestId: string;
+  taskName: string;
+  taskDescription: string;
+}
+
 interface AgentDrawerProps {
   open: boolean;
   projects: ProjectRecord[];
@@ -68,6 +76,7 @@ export function AgentDrawer({ open, projects, loadedSession, refreshSignal = 0, 
   const [context, setContext] = useState<AgentContextSnapshot>(emptyContext);
   const [todos, setTodos] = useState<AgentTodoItem[]>([]);
   const [todosOpen, setTodosOpen] = useState(true);
+  const [createTaskProposal, setCreateTaskProposal] = useState<CreateTaskProposal | null>(null);
   const messageCounter = useRef(0);
   const lastRefreshSignal = useRef(refreshSignal);
 
@@ -111,12 +120,24 @@ export function AgentDrawer({ open, projects, loadedSession, refreshSignal = 0, 
       return;
     }
     if (event.type === "tool_output" || event.type === "tool_end") {
+      if (event.type === "tool_end" && event.name === "create_task" && event.status === "done") {
+        onSaved?.();
+      }
       updateToolMessage(event);
       return;
     }
     if (event.type === "permission_request" || event.type === "ask_user_request") {
       const message = messageFromAgentEvent(event);
       if (message) upsertMessage(message);
+      return;
+    }
+    if (event.type === "create_task_request") {
+      setCreateTaskProposal({
+        sessionId: event.sessionId,
+        requestId: String(event.requestId ?? ""),
+        taskName: String(event.title ?? "New Task"),
+        taskDescription: String(event.description ?? ""),
+      });
       return;
     }
     if (event.type === "todo_update") {
@@ -407,6 +428,13 @@ export function AgentDrawer({ open, projects, loadedSession, refreshSignal = 0, 
     setMessages((current) => current.filter((item) => item.id !== message.id));
   }
 
+  async function answerCreateTask(accepted: boolean) {
+    const proposal = createTaskProposal;
+    if (!proposal) return;
+    setCreateTaskProposal(null);
+    await resolveAgentCreateTask(proposal.sessionId, proposal.requestId, accepted);
+  }
+
   function updateAskQuestion(messageId: string, questionIndex: number, update: (question: AgentAskQuestion) => AgentAskQuestion) {
     setMessages((current) => current.map((message) => {
       if (message.id !== messageId || !message.questions) return message;
@@ -568,6 +596,25 @@ export function AgentDrawer({ open, projects, loadedSession, refreshSignal = 0, 
                 ))}
               </select>
             </label>
+          </section>
+        </div>
+      )}
+      {createTaskProposal && (
+        <div className="agent-modal-backdrop page-centered" role="presentation">
+          <section aria-label="Create task proposal" className="agent-task-modal" role="dialog">
+            <header>
+              <strong>Create Task</strong>
+            </header>
+            <div className="agent-task-modal-body">
+              <h2>{createTaskProposal.taskName}</h2>
+              <div className="agent-task-description-scroll">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{createTaskProposal.taskDescription}</ReactMarkdown>
+              </div>
+            </div>
+            <footer>
+              <button type="button" onClick={() => void answerCreateTask(false)}>Cancel</button>
+              <button type="button" onClick={() => void answerCreateTask(true)}>Accept</button>
+            </footer>
           </section>
         </div>
       )}

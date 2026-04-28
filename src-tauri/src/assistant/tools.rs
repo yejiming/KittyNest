@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 mod ask_user;
+mod create_task;
 mod glob;
 mod grep;
 mod read_file;
@@ -48,11 +49,13 @@ pub struct PermissionDecision {
 pub struct ToolEnvironment {
     pub project_root: PathBuf,
     pub project_summary_root: PathBuf,
+    pub session_id: String,
     pub todos: Vec<AgentTodo>,
     pub permission_requests: Vec<PermissionRequestRecord>,
     permission_decisions: Option<Arc<Mutex<Vec<String>>>>,
     permission_handler: Option<Box<dyn FnMut(&str, &str) -> PermissionDecision + Send>>,
     ask_user_handler: Option<Box<dyn FnMut(Vec<serde_json::Value>) -> serde_json::Value + Send>>,
+    create_task_handler: Option<Box<dyn FnMut(serde_json::Value) -> serde_json::Value + Send>>,
 }
 
 impl ToolEnvironment {
@@ -60,11 +63,13 @@ impl ToolEnvironment {
         Self {
             project_root,
             project_summary_root,
+            session_id: String::new(),
             todos: Vec::new(),
             permission_requests: Vec::new(),
             permission_decisions: None,
             permission_handler: None,
             ask_user_handler: None,
+            create_task_handler: None,
         }
     }
 
@@ -92,6 +97,13 @@ impl ToolEnvironment {
         F: FnMut(Vec<serde_json::Value>) -> serde_json::Value + Send + 'static,
     {
         self.ask_user_handler = Some(Box::new(handler));
+    }
+
+    pub fn set_create_task_handler<F>(&mut self, handler: F)
+    where
+        F: FnMut(serde_json::Value) -> serde_json::Value + Send + 'static,
+    {
+        self.create_task_handler = Some(Box::new(handler));
     }
 
     pub fn set_permission_handler<F>(&mut self, handler: F)
@@ -127,6 +139,7 @@ pub fn tool_schemas() -> Vec<serde_json::Value> {
         grep::schema(),
         glob::schema(),
         read_memory::schema(),
+        create_task::schema(),
         todo_write::schema(),
         ask_user::schema(),
     ]
@@ -153,6 +166,7 @@ pub fn execute_tool(name: &str, arguments: serde_json::Value, env: &mut ToolEnvi
         "grep" => grep::execute(arguments, env),
         "glob" => glob::execute(arguments, env),
         "read_memory" => read_memory::execute(arguments, env),
+        "create_task" => create_task::execute(arguments, env),
         "todo_write" => todo_write::execute(arguments, env),
         "ask_user" => ask_user::execute(arguments, env),
         _ => format!("Error: unknown tool '{name}'"),
@@ -492,5 +506,64 @@ mod tests {
 
         assert!(result.contains("sqlite-session"));
         assert!(result.contains("Use SQLite fallback for graph memory"));
+    }
+
+    #[test]
+    fn create_task_waits_for_acceptance_and_writes_task_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = crate::models::AppPaths::from_data_dir(temp.path().join("kittynest"));
+        let workdir = temp.path().join("kittynest-app");
+        std::fs::create_dir_all(&workdir).unwrap();
+        let mut connection = crate::db::open(&paths).unwrap();
+        crate::db::migrate(&connection).unwrap();
+        crate::db::upsert_raw_sessions(
+            &mut connection,
+            &[crate::models::RawSession {
+                source: "codex".into(),
+                session_id: "task-session".into(),
+                workdir: workdir.to_string_lossy().to_string(),
+                created_at: "2026-04-28T00:00:00Z".into(),
+                updated_at: "2026-04-28T00:00:01Z".into(),
+                raw_path: temp.path().join("task-session.jsonl").to_string_lossy().to_string(),
+                messages: vec![crate::models::RawMessage {
+                    role: "user".into(),
+                    content: "create task".into(),
+                }],
+            }],
+        )
+        .unwrap();
+        let (project_id, _) = crate::db::get_project_by_slug(&connection, "kittynest-app")
+            .unwrap()
+            .unwrap();
+        crate::db::update_project_review(&connection, project_id, "/tmp/info.md").unwrap();
+        drop(connection);
+        let summary_root = paths.projects_dir.join("kittynest-app");
+        std::fs::create_dir_all(&summary_root).unwrap();
+        let mut env = super::ToolEnvironment::new(workdir, summary_root);
+        env.session_id = "task-session".into();
+        env.set_create_task_handler(|request| {
+            assert_eq!(request["taskName"], "Drawer Task");
+            assert!(request["taskDescription"].as_str().unwrap().contains("Drawer"));
+            serde_json::json!({"accepted": true})
+        });
+
+        let result = super::execute_tool(
+            "create_task",
+            serde_json::json!({
+                "task_name": "Drawer Task",
+                "task_description": "Build the **Drawer** task flow."
+            }),
+            &mut env,
+        );
+
+        assert!(result.contains("Task created"));
+        let connection = crate::db::open(&paths).unwrap();
+        let tasks = crate::db::list_tasks(&connection).unwrap();
+        let task = tasks.iter().find(|task| task.slug == "drawer-task").unwrap();
+        assert_eq!(task.status, "discussing");
+        assert!(task.session_path.as_ref().unwrap().ends_with("session.json"));
+        assert!(std::fs::read_to_string(task.description_path.as_ref().unwrap())
+            .unwrap()
+            .contains("Build the **Drawer** task flow."));
     }
 }

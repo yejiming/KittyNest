@@ -8,6 +8,7 @@ export type AgentEventType =
   | "todo_update"
   | "permission_request"
   | "ask_user_request"
+  | "create_task_request"
   | "done"
   | "cancelled"
   | "error";

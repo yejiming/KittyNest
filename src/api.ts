@@ -311,6 +311,21 @@ export async function resolveAgentAskUser(
   });
 }
 
+export async function resolveAgentCreateTask(
+  sessionId: string,
+  requestId: string,
+  accepted: boolean,
+): Promise<{ resolved: boolean }> {
+  if (!isTauriRuntime()) {
+    return { resolved: true };
+  }
+  return invoke<{ resolved: boolean }>("resolve_agent_create_task", {
+    sessionId,
+    requestId,
+    accepted,
+  });
+}
+
 export async function resetSessions(): Promise<{ reset: number }> {
   if (!isTauriRuntime()) {
     return { reset: 0 };

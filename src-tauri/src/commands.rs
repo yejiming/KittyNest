@@ -309,6 +309,18 @@ pub fn resolve_agent_ask_user(
 }
 
 #[tauri::command]
+pub fn resolve_agent_create_task(
+    app: tauri::AppHandle,
+    session_id: String,
+    request_id: String,
+    accepted: bool,
+    _services: State<'_, AppServices>,
+) -> CommandResult<serde_json::Value> {
+    let resolved = assistant_registry(app).resolve_create_task(&session_id, &request_id, accepted);
+    Ok(serde_json::json!({ "resolved": resolved }))
+}
+
+#[tauri::command]
 pub fn save_agent_session(
     app: tauri::AppHandle,
     session_id: String,
