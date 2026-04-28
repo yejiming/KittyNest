@@ -62,6 +62,8 @@ pub fn run() {
             commands::clear_agent_session,
             commands::resolve_agent_permission,
             commands::resolve_agent_ask_user,
+            commands::save_agent_session,
+            commands::load_agent_session,
             commands::read_markdown_file,
             commands::save_llm_settings,
             commands::update_task_status,

@@ -153,6 +153,45 @@ where
     parse_openai_sse(response, on_token)
 }
 
+pub fn request_openai_json(
+    settings: &crate::models::LlmSettings,
+    messages: Vec<serde_json::Value>,
+) -> anyhow::Result<String> {
+    if settings.interface != "openai" {
+        anyhow::bail!("Task Assistant currently requires an OpenAI-compatible Assistant model");
+    }
+    if !crate::llm::configured_for_remote(settings) {
+        anyhow::bail!("LLM settings are incomplete");
+    }
+    let max_tokens = if settings.max_tokens == 0 {
+        4096
+    } else {
+        settings.max_tokens
+    };
+    let body = serde_json::json!({
+        "model": settings.model,
+        "messages": messages,
+        "stream": false,
+        "max_tokens": max_tokens,
+        "max_completion_tokens": max_tokens,
+        "temperature": if settings.temperature.is_finite() { settings.temperature } else { 0.2 }
+    });
+    let value: serde_json::Value = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()?
+        .post(assistant_endpoint(&settings.base_url))
+        .bearer_auth(&settings.api_key)
+        .json(&body)
+        .send()?
+        .error_for_status()?
+        .json()?;
+    Ok(value
+        .pointer("/choices/0/message/content")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_string())
+}
+
 fn assistant_endpoint(base_url: &str) -> String {
     let trimmed = base_url.trim_end_matches('/');
     if trimmed.ends_with("chat/completions") {

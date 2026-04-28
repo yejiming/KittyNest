@@ -26,6 +26,38 @@ fn assistant_registry(
     REGISTRY.get_or_init(|| crate::assistant::AgentRegistry::new(TauriAgentEmitter { app }))
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TaskMetadataDraft {
+    pub task_name: String,
+    pub task_description: String,
+}
+
+pub(crate) fn parse_task_metadata_json(content: &str) -> anyhow::Result<TaskMetadataDraft> {
+    let value: serde_json::Value = serde_json::from_str(content.trim())?;
+    let task_description = value
+        .get("task_description")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if task_description.is_empty() {
+        anyhow::bail!("task_description is required");
+    }
+    let task_name = value
+        .get("task_name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if task_name.is_empty() {
+        anyhow::bail!("task_name is required");
+    }
+    Ok(TaskMetadataDraft {
+        task_name,
+        task_description,
+    })
+}
+
 #[tauri::command]
 pub fn get_app_state(services: State<'_, AppServices>) -> CommandResult<AppStateDto> {
     get_app_state_inner(&services.paths).map_err(to_command_error)
@@ -274,6 +306,31 @@ pub fn resolve_agent_ask_user(
 ) -> CommandResult<serde_json::Value> {
     let resolved = assistant_registry(app).resolve_ask_user(&session_id, &request_id, answers);
     Ok(serde_json::json!({ "resolved": resolved }))
+}
+
+#[tauri::command]
+pub fn save_agent_session(
+    app: tauri::AppHandle,
+    session_id: String,
+    project_slug: String,
+    timeline: crate::models::AgentTimelinePayload,
+    services: State<'_, AppServices>,
+) -> CommandResult<serde_json::Value> {
+    save_agent_session_inner(app, &services.paths, &session_id, &project_slug, timeline)
+        .map(|task| serde_json::to_value(task).unwrap_or_else(|_| serde_json::json!({})))
+        .map_err(to_command_error)
+}
+
+#[tauri::command]
+pub fn load_agent_session(
+    app: tauri::AppHandle,
+    project_slug: String,
+    task_slug: String,
+    services: State<'_, AppServices>,
+) -> CommandResult<serde_json::Value> {
+    load_agent_session_inner(app, &services.paths, &project_slug, &task_slug)
+        .map(|payload| serde_json::to_value(payload).unwrap_or_else(|_| serde_json::json!({})))
+        .map_err(to_command_error)
 }
 
 #[tauri::command]
@@ -565,6 +622,137 @@ pub(crate) fn assistant_project_paths(
     Ok((std::path::PathBuf::from(project.workdir), summary_root))
 }
 
+fn save_agent_session_inner(
+    app: tauri::AppHandle,
+    paths: &crate::models::AppPaths,
+    session_id: &str,
+    project_slug: &str,
+    timeline: crate::models::AgentTimelinePayload,
+) -> anyhow::Result<crate::models::TaskRecord> {
+    let connection = crate::db::open(paths)?;
+    crate::db::migrate(&connection)?;
+    let (project_id, project) = crate::db::get_project_by_slug(&connection, project_slug)?
+        .ok_or_else(|| anyhow::anyhow!("Project not found: {project_slug}"))?;
+    if project.review_status != "reviewed" {
+        anyhow::bail!("Task Assistant requires a reviewed project");
+    }
+    let settings = crate::config::resolve_llm_settings(
+        &crate::config::read_llm_settings(paths)?,
+        crate::config::LlmScenario::Assistant,
+    );
+    let raw = crate::assistant::llm::request_openai_json(&settings, task_metadata_messages(&timeline))?;
+    let draft = parse_task_metadata_json(&raw)?;
+    let task_slug =
+        crate::db::unique_task_slug(&connection, project_id, &crate::utils::slugify_lower(&draft.task_name))?;
+    let task_dir = paths
+        .projects_dir
+        .join(&project.slug)
+        .join("tasks")
+        .join(&task_slug);
+    std::fs::create_dir_all(&task_dir)?;
+    let description_path = task_dir.join("description.md");
+    let session_path = task_dir.join("session.json");
+    std::fs::write(&description_path, format!("{}\n", draft.task_description))?;
+    let snapshot = assistant_registry(app).session_export(session_id);
+    let saved = crate::models::SavedAgentSessionPayload {
+        version: 1,
+        session_id: session_id.to_string(),
+        project_slug: project.slug.clone(),
+        project_root: project.workdir.clone(),
+        created_at: crate::utils::now_rfc3339(),
+        messages: timeline.messages,
+        todos: timeline.todos,
+        context: timeline.context,
+        llm_messages: snapshot.llm_messages,
+    };
+    std::fs::write(&session_path, serde_json::to_string_pretty(&saved)?)?;
+    crate::db::upsert_task(
+        &connection,
+        project_id,
+        &task_slug,
+        &draft.task_name,
+        &draft.task_description,
+        "discussing",
+        &description_path.to_string_lossy(),
+    )?;
+    crate::db::list_tasks(&connection)?
+        .into_iter()
+        .find(|task| task.project_slug == project.slug && task.slug == task_slug)
+        .ok_or_else(|| anyhow::anyhow!("saved task not found after create"))
+}
+
+fn load_agent_session_inner(
+    app: tauri::AppHandle,
+    paths: &crate::models::AppPaths,
+    project_slug: &str,
+    task_slug: &str,
+) -> anyhow::Result<crate::models::SavedAgentSessionPayload> {
+    let connection = crate::db::open(paths)?;
+    crate::db::migrate(&connection)?;
+    let task = crate::db::list_tasks(&connection)?
+        .into_iter()
+        .find(|task| task.project_slug == project_slug && task.slug == task_slug)
+        .ok_or_else(|| anyhow::anyhow!("Task not found: {project_slug}/{task_slug}"))?;
+    let session_path = task
+        .session_path
+        .ok_or_else(|| anyhow::anyhow!("Task has no saved agent session"))?;
+    let content = std::fs::read_to_string(&session_path)?;
+    let saved: crate::models::SavedAgentSessionPayload = serde_json::from_str(&content)?;
+    let messages = saved
+        .llm_messages
+        .iter()
+        .filter_map(|message| {
+            let role = message.get("role").and_then(serde_json::Value::as_str)?;
+            let content = message
+                .get("content")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            Some(crate::assistant::context::AgentStoredMessage::new(role, content))
+        })
+        .collect::<Vec<_>>();
+    let todos = saved
+        .todos
+        .iter()
+        .filter_map(|todo| serde_json::from_value::<crate::assistant::tools::AgentTodo>(todo.clone()).ok())
+        .collect::<Vec<_>>();
+    assistant_registry(app).session_import(
+        &saved.session_id,
+        crate::assistant::AgentSessionSnapshot {
+            messages,
+            llm_messages: saved.llm_messages.clone(),
+            todos,
+        },
+    );
+    Ok(saved)
+}
+
+fn task_metadata_messages(timeline: &crate::models::AgentTimelinePayload) -> Vec<serde_json::Value> {
+    let transcript = timeline
+        .messages
+        .iter()
+        .filter_map(|message| {
+            let role = message.get("role").and_then(serde_json::Value::as_str)?;
+            if role != "user" && role != "assistant" {
+                return None;
+            }
+            let content = message
+                .get("content")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .trim();
+            if content.is_empty() {
+                return None;
+            }
+            Some(format!("{role}: {content}"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    vec![
+        serde_json::json!({"role": "system", "content": "Return only JSON with task_name and task_description. The task_name must be concise. The task_description must be markdown grounded only in the transcript."}),
+        serde_json::json!({"role": "user", "content": transcript}),
+    ]
+}
+
 fn read_markdown_file_inner(paths: &crate::models::AppPaths, path: &str) -> anyhow::Result<String> {
     let requested = std::path::PathBuf::from(path);
     let canonical = requested.canonicalize()?;
@@ -692,6 +880,20 @@ mod tests {
         memory::MemoryEntity,
         models::{AppPaths, RawMessage, RawSession},
     };
+
+    #[test]
+    fn parse_task_metadata_requires_name_and_description() {
+        let parsed = super::parse_task_metadata_json(
+            r#"{"task_name":"Save Drawer","task_description":"Persist **session**."}"#,
+        )
+        .unwrap();
+
+        assert_eq!(parsed.task_name, "Save Drawer");
+        assert!(parsed.task_description.contains("Persist"));
+
+        let error = super::parse_task_metadata_json(r#"{"task_name":""}"#).unwrap_err();
+        assert!(error.to_string().contains("task_description"));
+    }
 
     #[test]
     fn get_app_state_does_not_scan_sources_on_load() {

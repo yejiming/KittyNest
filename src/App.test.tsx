@@ -38,6 +38,12 @@ type ApiWithReviewQueue = typeof api & {
     requestId: string,
     answers: Record<string, unknown>,
   ) => Promise<{ resolved: boolean }>;
+  saveAgentSession: (
+    sessionId: string,
+    projectSlug: string,
+    timeline: unknown,
+  ) => Promise<import("./types").TaskRecord>;
+  loadAgentSession: (projectSlug: string, taskSlug: string) => Promise<import("./agentTypes").SavedAgentSession>;
 };
 
 const state: AppState = {
@@ -1443,6 +1449,40 @@ describe("assistant drawer", () => {
 
     await waitFor(() => expect(clearAgentSession).toHaveBeenCalledTimes(1));
     expect(screen.queryByText("hello")).not.toBeInTheDocument();
+  });
+
+  it("saves the full drawer timeline and can load it back", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue({
+      ...state,
+      projects: [{ ...state.projects[0], reviewStatus: "reviewed" }],
+    });
+    const saveAgentSession = vi
+      .spyOn(api as ApiWithReviewQueue, "saveAgentSession")
+      .mockResolvedValue({
+        ...state.tasks[0],
+        status: "discussing",
+        createdAt: "2026-04-28T08:00:00Z",
+        descriptionPath: "/Users/kc/.kittynest/projects/KittyNest/tasks/save-drawer/description.md",
+        sessionPath: "/Users/kc/.kittynest/projects/KittyNest/tasks/save-drawer/session.json",
+      });
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /^assistant$/i }));
+    await userEvent.type(screen.getByLabelText("Message Task Assistant"), "Please persist this");
+    await userEvent.click(screen.getByRole("button", { name: /^send$/i }));
+    const sessionId = window.sessionStorage.getItem("kittynest:agent-session") ?? "";
+    act(() => {
+      emitAgentEvent({ sessionId, type: "done", reply: "Persisted answer" });
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: /^save assistant session$/i }));
+
+    await waitFor(() => expect(saveAgentSession).toHaveBeenCalledTimes(1));
+    expect(saveAgentSession.mock.calls[0][2]).toMatchObject({
+      version: 1,
+      projectSlug: "KittyNest",
+    });
   });
 
   it("keeps finished thinking and tool cards expandable in the chat", async () => {

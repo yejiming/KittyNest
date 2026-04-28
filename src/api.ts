@@ -11,7 +11,9 @@ import type {
   MemorySearchRecord,
   ScanResult,
   SessionMemoryDetail,
+  TaskRecord,
 } from "./types";
+import { normalizeAgentContext, type SavedAgentSession } from "./agentTypes";
 
 export type { CreateTaskResult } from "./types";
 
@@ -235,6 +237,46 @@ export async function clearAgentSession(sessionId: string): Promise<{ cleared: b
     return { cleared: true };
   }
   return invoke<{ cleared: boolean }>("clear_agent_session", { sessionId });
+}
+
+export async function saveAgentSession(
+  sessionId: string,
+  projectSlug: string,
+  timeline: unknown,
+): Promise<TaskRecord> {
+  if (!isTauriRuntime()) {
+    return {
+      projectSlug,
+      slug: "saved-session",
+      title: "Saved Session",
+      brief: "Saved assistant session",
+      status: "discussing",
+      summaryPath: "",
+      descriptionPath: "",
+      sessionPath: "",
+      sessionCount: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+  }
+  return invoke<TaskRecord>("save_agent_session", { sessionId, projectSlug, timeline });
+}
+
+export async function loadAgentSession(projectSlug: string, taskSlug: string): Promise<SavedAgentSession> {
+  if (!isTauriRuntime()) {
+    return {
+      version: 1,
+      sessionId: "browser-session",
+      projectSlug,
+      projectRoot: "",
+      createdAt: new Date().toISOString(),
+      messages: [],
+      todos: [],
+      context: normalizeAgentContext({}),
+      llmMessages: [],
+    };
+  }
+  return invoke<SavedAgentSession>("load_agent_session", { projectSlug, taskSlug });
 }
 
 export async function resolveAgentPermission(

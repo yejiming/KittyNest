@@ -5,6 +5,7 @@ import {
   CircleStop,
   ListTodo,
   RefreshCw,
+  Save,
   Send,
   Settings,
   Wrench,
@@ -18,6 +19,7 @@ import {
   clearAgentSession,
   resolveAgentAskUser,
   resolveAgentPermission,
+  saveAgentSession,
   startAgentRun,
   stopAgentRun,
 } from "./api";
@@ -30,7 +32,9 @@ import {
   type AgentEvent,
   type AgentMessage,
   type AgentOption,
+  type AgentTimelinePayload,
   type AgentTodoItem,
+  type SavedAgentSession,
 } from "./agentTypes";
 import type { ProjectRecord } from "./types";
 
@@ -43,10 +47,12 @@ const emptyContext = normalizeAgentContext({});
 interface AgentDrawerProps {
   open: boolean;
   projects: ProjectRecord[];
+  loadedSession?: SavedAgentSession | null;
   onClose: () => void;
+  onSaved?: () => void;
 }
 
-export function AgentDrawer({ open, projects, onClose }: AgentDrawerProps) {
+export function AgentDrawer({ open, projects, loadedSession, onClose, onSaved }: AgentDrawerProps) {
   const reviewedProjects = useMemo(
     () => projects.filter((project) => project.reviewStatus === "reviewed"),
     [projects],
@@ -72,6 +78,16 @@ export function AgentDrawer({ open, projects, onClose }: AgentDrawerProps) {
       reviewedProjects.some((project) => project.slug === current) ? current : reviewedProjects[0].slug,
     );
   }, [reviewedProjects]);
+
+  useEffect(() => {
+    if (!loadedSession) return;
+    setMessages(loadedSession.messages);
+    setTodos(loadedSession.todos ?? []);
+    setContext(normalizeAgentContext(loadedSession.context));
+    setSelectedProject(loadedSession.projectSlug);
+    setInput("");
+    setRunning(false);
+  }, [loadedSession]);
 
   const handleAgentEvent = useCallback((event: AgentEvent) => {
     if (event.sessionId !== sessionId) return;
@@ -324,6 +340,20 @@ export function AgentDrawer({ open, projects, onClose }: AgentDrawerProps) {
     setRunning(false);
   }
 
+  async function saveSession() {
+    if (!selectedProject) return;
+    const timeline: AgentTimelinePayload = {
+      version: 1,
+      sessionId,
+      projectSlug: selectedProject,
+      messages,
+      todos,
+      context,
+    };
+    await saveAgentSession(sessionId, selectedProject, timeline);
+    onSaved?.();
+  }
+
   function startResize(event: ReactPointerEvent<HTMLDivElement>) {
     event.preventDefault();
     const startX = event.clientX;
@@ -390,6 +420,14 @@ export function AgentDrawer({ open, projects, onClose }: AgentDrawerProps) {
             <strong>Agent Assistant</strong>
           </div>
           <div className="agent-header-actions">
+            <button
+              aria-label="Save assistant session"
+              className="agent-icon-button"
+              disabled={!selectedProject || !messages.some((message) => message.role === "user") || !messages.some((message) => message.role === "assistant")}
+              onClick={() => void saveSession()}
+            >
+              <Save size={16} />
+            </button>
             <button aria-label="Refresh assistant" className="agent-icon-button" onClick={() => void refreshSession()}>
               <RefreshCw size={16} />
             </button>

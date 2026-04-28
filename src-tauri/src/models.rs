@@ -184,6 +184,31 @@ pub struct AppStateDto {
     pub jobs: Vec<JobRecord>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTimelinePayload {
+    pub version: usize,
+    pub session_id: String,
+    pub project_slug: String,
+    pub messages: Vec<serde_json::Value>,
+    pub todos: Vec<serde_json::Value>,
+    pub context: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedAgentSessionPayload {
+    pub version: usize,
+    pub session_id: String,
+    pub project_slug: String,
+    pub project_root: String,
+    pub created_at: String,
+    pub messages: Vec<serde_json::Value>,
+    pub todos: Vec<serde_json::Value>,
+    pub context: serde_json::Value,
+    pub llm_messages: Vec<serde_json::Value>,
+}
+
 #[derive(Clone, Debug)]
 pub struct StoredSession {
     pub id: i64,

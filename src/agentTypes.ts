@@ -94,6 +94,27 @@ export interface AgentMessage {
   questions?: AgentAskQuestion[];
 }
 
+export interface AgentTimelinePayload {
+  version: 1;
+  sessionId: string;
+  projectSlug: string;
+  messages: AgentMessage[];
+  todos: AgentTodoItem[];
+  context: AgentContextSnapshot;
+}
+
+export interface SavedAgentSession {
+  version: number;
+  sessionId: string;
+  projectSlug: string;
+  projectRoot: string;
+  createdAt: string;
+  messages: AgentMessage[];
+  todos: AgentTodoItem[];
+  context: AgentContextSnapshot;
+  llmMessages: unknown[];
+}
+
 const emptyBreakdown: AgentContextBreakdown = {
   system: 0,
   user: 0,
