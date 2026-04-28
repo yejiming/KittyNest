@@ -39,13 +39,19 @@ pub fn openai_stream_body(
         "messages": messages,
         "stream": true,
         "max_tokens": max_tokens,
-        "max_completion_tokens": max_tokens,
         "temperature": if settings.temperature.is_finite() { settings.temperature } else { 0.2 }
     });
+    if !is_deepseek(settings) {
+        body["max_completion_tokens"] = serde_json::json!(max_tokens);
+    }
     if !tools.is_empty() {
         body["tools"] = serde_json::Value::Array(tools);
     }
     body
+}
+
+fn is_deepseek(settings: &crate::models::LlmSettings) -> bool {
+    settings.provider.trim().eq_ignore_ascii_case("DeepSeek")
 }
 
 pub fn parse_openai_sse<R, F>(reader: R, mut on_token: F) -> anyhow::Result<AssistantLlmResponse>
@@ -240,6 +246,25 @@ mod tests {
         assert_eq!(body["stream"], true);
         assert_eq!(body["max_tokens"], 123);
         assert_eq!(body["max_completion_tokens"], 123);
+        assert_eq!(body["tools"][0]["function"]["name"], "read_file");
+    }
+
+    #[test]
+    fn deepseek_body_uses_only_max_tokens_with_tools() {
+        let mut settings = crate::config::default_llm_settings();
+        settings.provider = "DeepSeek".into();
+        settings.model = "deepseek-chat".into();
+        settings.max_tokens = 123;
+        let body = super::openai_stream_body(
+            &settings,
+            vec![serde_json::json!({"role": "user", "content": "hello"})],
+            vec![
+                serde_json::json!({"type": "function", "function": {"name": "read_file", "parameters": {"type": "object"}}}),
+            ],
+        );
+
+        assert_eq!(body["max_tokens"], 123);
+        assert!(body.get("max_completion_tokens").is_none());
         assert_eq!(body["tools"][0]["function"]["name"], "read_file");
     }
 }
