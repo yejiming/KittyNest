@@ -24,6 +24,19 @@ type ApiWithReviewQueue = typeof api & {
   resetSessions: () => Promise<{ reset: number }>;
   resetTasks: () => Promise<{ reset: number }>;
   stopJob: (jobId: number) => Promise<{ stopped: boolean }>;
+  startAgentRun: (sessionId: string, projectSlug: string, message: string) => Promise<{ started: boolean }>;
+  stopAgentRun: (sessionId: string) => Promise<{ stopped: boolean }>;
+  resolveAgentPermission: (
+    sessionId: string,
+    requestId: string,
+    value: string,
+    supplementalInfo: string,
+  ) => Promise<{ resolved: boolean }>;
+  resolveAgentAskUser: (
+    sessionId: string,
+    requestId: string,
+    answers: Record<string, unknown>,
+  ) => Promise<{ resolved: boolean }>;
 };
 
 const state: AppState = {
@@ -1260,5 +1273,20 @@ describe("agent drawer helpers", () => {
       toolCallId: "call_read",
       name: "read_file",
     });
+  });
+
+  it("returns browser-preview fallbacks for agent command wrappers", async () => {
+    await expect((api as ApiWithReviewQueue).startAgentRun("session-1", "KittyNest", "hello")).resolves.toEqual({
+      started: true,
+    });
+    await expect((api as ApiWithReviewQueue).stopAgentRun("session-1")).resolves.toEqual({ stopped: true });
+    await expect(
+      (api as ApiWithReviewQueue).resolveAgentPermission("session-1", "request-1", "allow", ""),
+    ).resolves.toEqual({ resolved: true });
+    await expect(
+      (api as ApiWithReviewQueue).resolveAgentAskUser("session-1", "request-1", {
+        "How?": "Carefully",
+      }),
+    ).resolves.toEqual({ resolved: true });
   });
 });

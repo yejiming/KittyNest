@@ -212,6 +212,56 @@ export async function deleteTask(projectSlug: string, taskSlug: string): Promise
   });
 }
 
+export async function startAgentRun(
+  sessionId: string,
+  projectSlug: string,
+  message: string,
+): Promise<{ started: boolean }> {
+  if (!isTauriRuntime()) {
+    return { started: true };
+  }
+  return invoke<{ started: boolean }>("start_agent_run", { sessionId, projectSlug, message });
+}
+
+export async function stopAgentRun(sessionId: string): Promise<{ stopped: boolean }> {
+  if (!isTauriRuntime()) {
+    return { stopped: true };
+  }
+  return invoke<{ stopped: boolean }>("stop_agent_run", { sessionId });
+}
+
+export async function resolveAgentPermission(
+  sessionId: string,
+  requestId: string,
+  value: string,
+  supplementalInfo = "",
+): Promise<{ resolved: boolean }> {
+  if (!isTauriRuntime()) {
+    return { resolved: true };
+  }
+  return invoke<{ resolved: boolean }>("resolve_agent_permission", {
+    sessionId,
+    requestId,
+    value,
+    supplementalInfo,
+  });
+}
+
+export async function resolveAgentAskUser(
+  sessionId: string,
+  requestId: string,
+  answers: Record<string, unknown>,
+): Promise<{ resolved: boolean }> {
+  if (!isTauriRuntime()) {
+    return { resolved: true };
+  }
+  return invoke<{ resolved: boolean }>("resolve_agent_ask_user", {
+    sessionId,
+    requestId,
+    answers,
+  });
+}
+
 export async function resetSessions(): Promise<{ reset: number }> {
   if (!isTauriRuntime()) {
     return { reset: 0 };
