@@ -57,7 +57,7 @@ export function AgentDrawer({ open, projects, loadedSession, onClose, onSaved }:
     () => projects.filter((project) => project.reviewStatus === "reviewed"),
     [projects],
   );
-  const [sessionId] = useState(getOrCreateSessionId);
+  const [sessionId, setSessionId] = useState(getOrCreateSessionId);
   const [selectedProject, setSelectedProject] = useState(reviewedProjects[0]?.slug ?? "");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [width, setWidth] = useState(defaultDrawerWidth);
@@ -81,6 +81,8 @@ export function AgentDrawer({ open, projects, loadedSession, onClose, onSaved }:
 
   useEffect(() => {
     if (!loadedSession) return;
+    setSessionId(loadedSession.sessionId);
+    window.sessionStorage.setItem(sessionStorageKey, loadedSession.sessionId);
     setMessages(loadedSession.messages);
     setTodos(loadedSession.todos ?? []);
     setContext(normalizeAgentContext(loadedSession.context));

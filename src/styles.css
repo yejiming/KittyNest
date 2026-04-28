@@ -1050,6 +1050,43 @@ button {
   color: #8aadb3;
 }
 
+.saved-task-description {
+  display: contents;
+}
+
+.saved-task-description .markdown-scroll,
+.task-conversation-messages {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.saved-task-description .markdown-scroll::-webkit-scrollbar,
+.task-conversation-messages::-webkit-scrollbar {
+  display: none;
+}
+
+.saved-task-conversation {
+  display: grid;
+  gap: 12px;
+}
+
+.task-conversation-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 430px;
+  min-height: 120px;
+  overflow: auto;
+}
+
+.task-conversation-messages .agent-message {
+  max-width: min(760px, 100%);
+}
+
+.task-conversation-messages .agent-message.assistant .markdown-body {
+  padding-right: 0;
+}
+
 .list-page {
   display: grid;
   gap: 10px;

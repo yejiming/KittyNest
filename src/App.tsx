@@ -52,6 +52,7 @@ import {
   listMemoryEntities,
   readMarkdownFile,
   deleteTask,
+  loadAgentSession,
   resetMemories,
   resetProjects,
   resetSessions,
@@ -62,6 +63,7 @@ import {
   stopJob,
 } from "./api";
 import { AgentDrawer } from "./AgentDrawer";
+import type { AgentMessage, SavedAgentSession } from "./agentTypes";
 import type {
   AppState,
   LlmModelSettings,
@@ -96,6 +98,7 @@ export default function App() {
   const [notice, setNotice] = useState("Tauri commands idle");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [agentDrawerOpen, setAgentDrawerOpen] = useState(false);
+  const [loadedAgentSession, setLoadedAgentSession] = useState<SavedAgentSession | null>(null);
   const tauriRuntime = isTauriRuntime();
 
   const refresh = async () => {
@@ -364,6 +367,16 @@ export default function App() {
                 return "Task deleted";
               })
             }
+            onLoad={async (loadedSession) => {
+              try {
+                const next = loadedSession ?? await loadAgentSession(currentTask.projectSlug, currentTask.slug);
+                setLoadedAgentSession(next);
+                setAgentDrawerOpen(true);
+                setNotice("Task session loaded");
+              } catch (error) {
+                setNotice(error instanceof Error ? error.message : String(error));
+              }
+            }}
             onOpenSession={(sessionId) => {
               setSelectedSession(sessionId);
               setView("sessionDetail");
@@ -438,7 +451,13 @@ export default function App() {
         <span><Database size={16} /> SQLite synced</span>
         <span><Activity size={16} /> {notice}</span>
       </footer>
-      <AgentDrawer open={agentDrawerOpen} projects={state.projects} onClose={() => setAgentDrawerOpen(false)} />
+      <AgentDrawer
+        open={agentDrawerOpen}
+        projects={state.projects}
+        loadedSession={loadedAgentSession}
+        onClose={() => setAgentDrawerOpen(false)}
+        onSaved={() => void refresh()}
+      />
     </div>
   );
 }
@@ -857,16 +876,85 @@ function TaskView({
   sessions,
   onStatus,
   onDelete,
+  onLoad,
   onOpenSession,
 }: {
   task: TaskRecord;
   sessions: SessionRecord[];
   onStatus: (status: string) => void;
   onDelete: () => void;
+  onLoad: (loadedSession?: SavedAgentSession | null) => void;
   onOpenSession: (sessionId: string) => void;
 }) {
   const orderedSessions = [...sessions].sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
   const taskDir = taskDirectoryPath(task);
+  const [savedSession, setSavedSession] = useState<SavedAgentSession | null>(null);
+  const [savedSessionError, setSavedSessionError] = useState("");
+
+  useEffect(() => {
+    setSavedSession(null);
+    setSavedSessionError("");
+    if (!task.sessionPath) return;
+    let disposed = false;
+    void loadAgentSession(task.projectSlug, task.slug)
+      .then((session) => {
+        if (!disposed) setSavedSession(session);
+      })
+      .catch((error) => {
+        if (!disposed) setSavedSessionError(error instanceof Error ? error.message : String(error));
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [task.projectSlug, task.slug, task.sessionPath]);
+
+  if (task.sessionPath) {
+    return (
+      <section className="detail-layout">
+        <div className="panel wide">
+          <PanelTitle
+            title="Task Info"
+            action={(
+              <div className="panel-actions">
+                <IconButton label="Delete" icon={<Trash2 size={16} />} onClick={onDelete} />
+                <IconButton label="Load" icon={<Bot size={16} />} onClick={() => onLoad(savedSession)} />
+              </div>
+            )}
+          />
+          <div className="task-meta">
+            <span>Name</span>
+            <strong>{task.title}</strong>
+            <span>Project</span>
+            <strong>{task.projectSlug}</strong>
+            <span>Status</span>
+            <strong>{task.status}</strong>
+            <span>Created</span>
+            <strong>{task.createdAt}</strong>
+          </div>
+          <div className="segmented">
+            {["discussing", "developing", "done"].map((status) => (
+              <button
+                key={status}
+                className={task.status === status ? "active" : ""}
+                onClick={() => onStatus(status)}
+              >
+                {status}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="saved-task-description">
+          <MarkdownPanel
+            title="Task Description"
+            path={task.descriptionPath ?? task.summaryPath}
+            empty="Task description has not been written yet."
+          />
+        </div>
+        <SavedTaskConversation messages={savedSession?.messages ?? []} error={savedSessionError} />
+      </section>
+    );
+  }
+
   return (
     <section className="detail-layout">
       <div className="panel wide">
@@ -924,6 +1012,25 @@ function TaskView({
         {orderedSessions.length === 0 && <div className="panel wide"><EmptyLine text="No session summaries yet." /></div>}
       </div>
     </section>
+  );
+}
+
+function SavedTaskConversation({ messages, error }: { messages: AgentMessage[]; error: string }) {
+  const conversation = messages.filter((message) => message.role === "user" || message.role === "assistant");
+  return (
+    <div className="panel wide saved-task-conversation">
+      <PanelTitle title="Conversation" />
+      <div className="task-conversation-messages">
+        {conversation.map((message) => (
+          <article key={message.id} className={`agent-message ${message.role}`}>
+            {message.role === "assistant"
+              ? <MarkdownContent content={message.content ?? ""} />
+              : message.content}
+          </article>
+        ))}
+        {conversation.length === 0 && <EmptyLine text={error || "No saved conversation messages yet."} />}
+      </div>
+    </div>
   );
 }
 

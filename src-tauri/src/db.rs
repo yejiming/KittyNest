@@ -1657,21 +1657,26 @@ pub fn update_task_status(
     task_slug: &str,
     status: &str,
 ) -> anyhow::Result<bool> {
-    let session_count: i64 = connection
+    let task_info: Option<(i64, String)> = connection
         .query_row(
             r#"
-            SELECT COUNT(s.id)
+            SELECT COUNT(s.id), t.summary_path
             FROM tasks t
             JOIN projects p ON p.id = t.project_id
             LEFT JOIN sessions s ON s.task_id = t.id
             WHERE t.slug = ?1 AND p.slug = ?2
+            GROUP BY t.id, t.summary_path
             "#,
             params![task_slug, project_slug],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .optional()?
-        .unwrap_or(0);
-    if session_count == 0 && status != "discussing" {
+        .optional()?;
+    let (session_count, summary_path) = task_info.unwrap_or((0, String::new()));
+    let saved_agent_task = summary_path.ends_with("/description.md")
+        && std::path::Path::new(&summary_path)
+            .with_file_name("session.json")
+            .exists();
+    if session_count == 0 && status != "discussing" && !saved_agent_task {
         anyhow::bail!("empty task can only be discussing");
     }
     let changed = connection.execute(
@@ -1835,7 +1840,7 @@ mod tests {
         reset_all_sessions, reset_all_tasks, session_memories_by_session_id,
         unprocessed_session_by_session_id, unprocessed_sessions,
         unprocessed_sessions_updated_after, update_job_progress, update_project_progress,
-        update_project_review, upsert_raw_sessions, upsert_task,
+        update_project_review, update_task_status, upsert_raw_sessions, upsert_task,
     };
     use crate::models::{AppPaths, MemorySearchResultRecord, RawMessage, RawSession};
 
@@ -2958,6 +2963,45 @@ mod tests {
 
         assert!(error.contains("empty task"));
         assert_eq!(task.status, "discussing");
+    }
+
+    #[test]
+    fn saved_empty_tasks_can_move_between_all_task_statuses() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
+        std::fs::create_dir_all(&paths.data_dir).unwrap();
+        let connection = open(&paths).unwrap();
+        migrate(&connection).unwrap();
+        let project_id = ensure_project_for_workdir(
+            &connection,
+            "/tmp/status-project",
+            "codex",
+            "2026-04-28T08:00:00Z",
+        )
+        .unwrap();
+        let task_dir = paths
+            .projects_dir
+            .join("status-project")
+            .join("tasks")
+            .join("saved");
+        std::fs::create_dir_all(&task_dir).unwrap();
+        let description = task_dir.join("description.md");
+        let session = task_dir.join("session.json");
+        std::fs::write(&description, "Description").unwrap();
+        std::fs::write(&session, "{}").unwrap();
+        upsert_task(
+            &connection,
+            project_id,
+            "saved",
+            "Saved",
+            "brief",
+            "discussing",
+            &description.to_string_lossy(),
+        )
+        .unwrap();
+
+        assert!(update_task_status(&connection, "status-project", "saved", "developing").unwrap());
+        assert!(update_task_status(&connection, "status-project", "saved", "done").unwrap());
     }
 
     #[test]

@@ -859,6 +859,59 @@ describe("KittyNest dashboard", () => {
     expect(cards[1]).toHaveTextContent("Later summary");
   });
 
+  it("renders saved task detail metadata description conversation and load action", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue({
+      ...state,
+      tasks: [
+        {
+          ...state.tasks[0],
+          status: "discussing",
+          sessionCount: 0,
+          createdAt: "2026-04-28T08:00:00Z",
+          summaryPath: "/Users/kc/.kittynest/projects/KittyNest/tasks/session-ingest/description.md",
+          descriptionPath: "/Users/kc/.kittynest/projects/KittyNest/tasks/session-ingest/description.md",
+          sessionPath: "/Users/kc/.kittynest/projects/KittyNest/tasks/session-ingest/session.json",
+        },
+      ],
+      sessions: [],
+    });
+    vi.spyOn(api, "readMarkdownFile").mockResolvedValue({ content: "Build **Drawer Save**." });
+    const loadAgentSession = vi.spyOn(api as ApiWithReviewQueue, "loadAgentSession").mockResolvedValue({
+      version: 1,
+      sessionId: "saved-session",
+      projectSlug: "KittyNest",
+      projectRoot: "/Users/kc/KittyNest",
+      createdAt: "2026-04-28T08:00:00Z",
+      messages: [
+        { id: "thinking-1", role: "thinking", content: "planning", status: "finished", expanded: false },
+        { id: "tool-1", role: "tool", toolCallId: "call_1", name: "read_file", output: "file", status: "done", expanded: false },
+        { id: "user-1", role: "user", content: "Please save this" },
+        { id: "assistant-1", role: "assistant", content: "Saved." },
+      ],
+      todos: [],
+      context: { usedTokens: 10, maxTokens: 100, remainingTokens: 90, thinkingTokens: 2, breakdown: { system: 1, user: 3, assistant: 4, tool: 2 } },
+      llmMessages: [],
+    });
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /^tasks$/i }));
+    await userEvent.click(screen.getByRole("button", { name: /session ingest/i }));
+
+    expect(screen.getByRole("heading", { name: "Session Ingest" })).toBeInTheDocument();
+    expect(screen.getAllByText("KittyNest").length).toBeGreaterThan(0);
+    expect(screen.getByText("2026-04-28T08:00:00Z")).toBeInTheDocument();
+    expect(await screen.findByText("Drawer Save", { selector: "strong" })).toBeInTheDocument();
+    expect(await screen.findByText("Please save this")).toBeInTheDocument();
+    expect(screen.getByText("Saved.")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /^load$/i }));
+
+    await waitFor(() => expect(loadAgentSession).toHaveBeenCalledWith("KittyNest", "session-ingest"));
+    expect(await screen.findByLabelText("Agent Assistant")).toHaveClass("open");
+    expect(screen.getByText("planning")).toBeInTheDocument();
+  });
+
   it("renders task prompt markdown from sibling files without task summary card", async () => {
     vi.spyOn(api, "getAppState").mockResolvedValue({
       ...state,
