@@ -121,7 +121,10 @@ pub struct TaskRecord {
     pub brief: String,
     pub status: String,
     pub summary_path: String,
+    pub description_path: Option<String>,
+    pub session_path: Option<String>,
     pub session_count: usize,
+    pub created_at: String,
     pub updated_at: String,
 }
 

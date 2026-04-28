@@ -103,7 +103,10 @@ const state: AppState = {
       brief: "User goal: import sessions",
       status: "developing",
       summaryPath: "/Users/kc/.kittynest/projects/KittyNest/tasks/session-ingest/summary.md",
+      descriptionPath: null,
+      sessionPath: null,
       sessionCount: 2,
+      createdAt: "2026-04-26T01:00:00Z",
       updatedAt: "2026-04-26T01:00:00Z",
     },
   ],
@@ -341,6 +344,32 @@ describe("KittyNest dashboard", () => {
     expect(screen.queryByLabelText(/task prompt/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^create task$/i })).not.toBeInTheDocument();
     expect(createTask).not.toHaveBeenCalled();
+  });
+
+  it("shows saved task list columns with created date", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue({
+      ...state,
+      tasks: [
+        {
+          ...state.tasks[0],
+          status: "discussing",
+          createdAt: "2026-04-28T08:00:00Z",
+          descriptionPath: "/Users/kc/.kittynest/projects/KittyNest/tasks/session-ingest/description.md",
+          sessionPath: "/Users/kc/.kittynest/projects/KittyNest/tasks/session-ingest/session.json",
+        },
+      ],
+    });
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /^tasks$/i }));
+
+    expect(screen.getByRole("columnheader", { name: "Name" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Project" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Status" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Created" })).toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "Sessions" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /session ingest/i })).toHaveTextContent("2026-04-28");
   });
 
   it("renders project summary and progress markdown content", async () => {

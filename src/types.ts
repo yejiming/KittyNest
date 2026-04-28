@@ -89,7 +89,10 @@ export interface TaskRecord {
   brief: string;
   status: string;
   summaryPath: string;
+  descriptionPath?: string | null;
+  sessionPath?: string | null;
   sessionCount: number;
+  createdAt: string;
   updatedAt: string;
 }
 

@@ -605,14 +605,14 @@ function TasksList({
             <span role="columnheader">Name</span>
             <span role="columnheader">Project</span>
             <span role="columnheader">Status</span>
-            <span role="columnheader">Sessions</span>
+            <span role="columnheader">Created</span>
           </div>
           {tasks.map((task) => (
             <button key={`${task.projectSlug}-${task.slug}`} className="list-row" onClick={() => onOpen(task.projectSlug, task.slug)}>
               <strong>{task.title}</strong>
               <span>{task.projectSlug}</span>
               <small>{task.status}</small>
-              <small>{task.sessionCount}</small>
+              <small>{task.createdAt ? task.createdAt.slice(0, 10) : compactAgeLabel(task.updatedAt)}</small>
             </button>
           ))}
           {tasks.length === 0 && <EmptyLine text="No tasks yet." />}

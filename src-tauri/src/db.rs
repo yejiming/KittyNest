@@ -42,6 +42,7 @@ pub fn migrate(connection: &rusqlite::Connection) -> anyhow::Result<()> {
           brief TEXT NOT NULL,
           status TEXT NOT NULL,
           summary_path TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT '',
           updated_at TEXT NOT NULL,
           UNIQUE(project_id, slug)
         );
@@ -173,6 +174,16 @@ pub fn migrate(connection: &rusqlite::Connection) -> anyhow::Result<()> {
         "user_preference_path TEXT",
     )?;
     add_column_if_missing(connection, "projects", "agents_path", "agents_path TEXT")?;
+    add_column_if_missing(
+        connection,
+        "tasks",
+        "created_at",
+        "created_at TEXT NOT NULL DEFAULT ''",
+    )?;
+    connection.execute(
+        "UPDATE tasks SET created_at = updated_at WHERE created_at = ''",
+        [],
+    )?;
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_session_memories_source_session ON session_memories(source_session, ordinal)",
         [],
@@ -434,10 +445,16 @@ pub fn get_project_by_slug(
 pub fn list_tasks(connection: &rusqlite::Connection) -> anyhow::Result<Vec<TaskRecord>> {
     let mut statement = connection.prepare(
         r#"
-        SELECT p.slug, t.slug, t.title, t.brief,
-               CASE WHEN COUNT(s.id) = 0 THEN 'discussing' ELSE t.status END AS status,
-               t.summary_path, t.updated_at,
-               COUNT(s.id) AS session_count
+        SELECT p.slug, t.slug, t.title, t.brief, t.status,
+               t.summary_path,
+               CASE WHEN t.summary_path LIKE '%/description.md' THEN t.summary_path ELSE NULL END AS description_path,
+               CASE WHEN t.summary_path LIKE '%/description.md'
+                    THEN substr(t.summary_path, 1, length(t.summary_path) - length('/description.md')) || '/session.json'
+                    ELSE NULL
+               END AS session_path,
+               COUNT(s.id) AS session_count,
+               t.created_at,
+               t.updated_at
         FROM tasks t
         JOIN projects p ON p.id = t.project_id
         LEFT JOIN sessions s ON s.task_id = t.id
@@ -446,7 +463,7 @@ pub fn list_tasks(connection: &rusqlite::Connection) -> anyhow::Result<Vec<TaskR
         "#,
     )?;
     let rows = statement.query_map([], |row| {
-        let session_count: i64 = row.get(7)?;
+        let session_count: i64 = row.get(8)?;
         Ok(TaskRecord {
             project_slug: row.get(0)?,
             slug: row.get(1)?,
@@ -454,8 +471,11 @@ pub fn list_tasks(connection: &rusqlite::Connection) -> anyhow::Result<Vec<TaskR
             brief: row.get(3)?,
             status: row.get(4)?,
             summary_path: row.get(5)?,
-            updated_at: row.get(6)?,
+            description_path: row.get(6)?,
+            session_path: row.get(7)?,
             session_count: session_count as usize,
+            created_at: row.get(9)?,
+            updated_at: row.get(10)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -1182,8 +1202,8 @@ pub fn upsert_task(
 
     connection.execute(
         r#"
-        INSERT INTO tasks (project_id, slug, title, brief, status, summary_path, updated_at)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        INSERT INTO tasks (project_id, slug, title, brief, status, summary_path, created_at, updated_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
         "#,
         params![project_id, slug, title, brief, status, summary_path, now],
     )?;
@@ -1807,6 +1827,7 @@ mod tests {
     use super::{
         cancel_job, claim_next_job, delete_task_if_empty, enqueue_analyze_project_sessions,
         enqueue_analyze_session, enqueue_analyze_sessions, enqueue_review_project,
+        ensure_project_for_workdir,
         enqueue_scan_sources, list_active_jobs, list_llm_provider_calls, list_projects,
         list_sessions, list_tasks, mark_session_failed, mark_session_processed,
         mark_session_processed_with_optional_task, mark_stale_running_jobs_queued, migrate, open,
@@ -1843,6 +1864,54 @@ mod tests {
             1
         );
         assert_eq!(upsert_raw_sessions(&mut connection, &[session]).unwrap(), 0);
+    }
+
+    #[test]
+    fn task_records_include_created_at_and_saved_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
+        std::fs::create_dir_all(&paths.data_dir).unwrap();
+        let connection = open(&paths).unwrap();
+        migrate(&connection).unwrap();
+        let project_id = ensure_project_for_workdir(
+            &connection,
+            "/tmp/saved-task-project",
+            "codex",
+            "2026-04-28T08:00:00Z",
+        )
+        .unwrap();
+        let task_dir = paths
+            .projects_dir
+            .join("saved-task-project")
+            .join("tasks")
+            .join("draft");
+        std::fs::create_dir_all(&task_dir).unwrap();
+        let description = task_dir.join("description.md");
+        let session = task_dir.join("session.json");
+        std::fs::write(&description, "Description").unwrap();
+        std::fs::write(&session, "{}").unwrap();
+        upsert_task(
+            &connection,
+            project_id,
+            "draft",
+            "Draft Task",
+            "brief",
+            "discussing",
+            &description.to_string_lossy(),
+        )
+        .unwrap();
+
+        let task = list_tasks(&connection).unwrap().remove(0);
+
+        assert_eq!(task.created_at, task.updated_at);
+        assert_eq!(
+            task.description_path.as_deref(),
+            Some(description.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            task.session_path.as_deref(),
+            Some(session.to_string_lossy().as_ref())
+        );
     }
 
     #[test]
