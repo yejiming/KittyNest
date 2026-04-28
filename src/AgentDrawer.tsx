@@ -102,9 +102,8 @@ export function AgentDrawer({ open, projects, onClose }: AgentDrawerProps) {
       return;
     }
     if (event.type === "done") {
-      if (event.reply) appendAssistantMessage(event.reply);
       setRunning(false);
-      finishAssistantMessage("done");
+      finishAssistantMessage("done", event.reply);
       return;
     }
     if (event.type === "cancelled") {
@@ -159,12 +158,24 @@ export function AgentDrawer({ open, projects, onClose }: AgentDrawerProps) {
     });
   }
 
-  function finishAssistantMessage(status: string) {
-    setMessages((current) => current.map((message) =>
-      message.role === "assistant" && message.status === "running"
-        ? { ...message, status }
-        : message,
-    ));
+  function finishAssistantMessage(status: string, finalContent?: string) {
+    setMessages((current) => {
+      let finished = false;
+      const next = current.map((message) => {
+        if (message.role !== "assistant" || message.status !== "running") return message;
+        finished = true;
+        return {
+          ...message,
+          content: finalContent ?? message.content,
+          status,
+        };
+      });
+      if (finished || !finalContent) return next;
+      return [
+        ...next,
+        { id: `assistant-${Date.now()}`, role: "assistant", content: finalContent, status },
+      ];
+    });
   }
 
   function upsertThinkingMessage(event: AgentEvent) {
@@ -540,11 +551,11 @@ function ContextRing({ context, percent }: { context: AgentContextSnapshot; perc
       <div className="agent-context-tooltip" role="tooltip">
         <strong>Context</strong>
         <span>{context.usedTokens} / {context.maxTokens || 0} tokens</span>
-        <span>System {contextShareLabel(context, "system")}</span>
-        <span>User {contextShareLabel(context, "user")}</span>
-        <span>Assistant {contextShareLabel(context, "assistant")}</span>
-        <span>Thinking {contextShareLabel(context, "thinking")}</span>
-        <span>Tool {contextShareLabel(context, "tool")}</span>
+        <span>System: {contextShareLabel(context, "system")}</span>
+        <span>User: {contextShareLabel(context, "user")}</span>
+        <span>Assistant: {contextShareLabel(context, "assistant")}</span>
+        <span>Thinking: {contextShareLabel(context, "thinking")}</span>
+        <span>Tool: {contextShareLabel(context, "tool")}</span>
       </div>
     </div>
   );

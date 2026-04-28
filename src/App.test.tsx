@@ -1336,4 +1336,119 @@ describe("assistant drawer", () => {
     await userEvent.click(screen.getByRole("button", { name: /stop/i }));
     await waitFor(() => expect(stop).toHaveBeenCalledWith(expect.any(String)));
   });
+
+  it("renders assistant thinking tool and task-list stream events", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue({
+      ...state,
+      projects: [{ ...state.projects[0], reviewStatus: "reviewed" }],
+    });
+
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: /^assistant$/i }));
+    const sessionId = window.sessionStorage.getItem("kittynest:agent-session") ?? "";
+
+    act(() => {
+      emitAgentEvent({ sessionId, type: "thinking_status", status: "running" });
+      emitAgentEvent({ sessionId, type: "thinking_delta", delta: "hidden reasoning" });
+      emitAgentEvent({
+        sessionId,
+        type: "tool_start",
+        toolCallId: "call_1",
+        name: "read_file",
+        arguments: { file_path: "src/App.tsx" },
+        summary: "read_file src/App.tsx",
+      });
+      emitAgentEvent({ sessionId, type: "tool_output", toolCallId: "call_1", delta: "1\timport React" });
+      emitAgentEvent({
+        sessionId,
+        type: "tool_end",
+        toolCallId: "call_1",
+        status: "done",
+        resultPreview: "1\timport React",
+      });
+      emitAgentEvent({
+        sessionId,
+        type: "todo_update",
+        todos: [{ content: "Ship drawer", activeForm: "Shipping drawer", status: "in_progress" }],
+      });
+      emitAgentEvent({ sessionId, type: "token", delta: "**Hello**" });
+      emitAgentEvent({
+        sessionId,
+        type: "done",
+        reply: "**Hello**",
+        context: {
+          usedTokens: 100,
+          maxTokens: 1000,
+          thinkingTokens: 10,
+          breakdown: { system: 20, user: 20, assistant: 40, tool: 20 },
+        },
+      });
+    });
+
+    expect(screen.getAllByText(/thinking/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/read_file/i)).toBeInTheDocument();
+    expect(screen.getByText(/ship drawer/i)).toBeInTheDocument();
+    expect(screen.getByText("Hello")).toBeInTheDocument();
+  });
+
+  it("resolves permission cards and removes them after selection", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue({
+      ...state,
+      projects: [{ ...state.projects[0], reviewStatus: "reviewed" }],
+    });
+    const resolve = vi.spyOn(api as ApiWithReviewQueue, "resolveAgentPermission").mockResolvedValue({ resolved: true });
+
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: /^assistant$/i }));
+    const sessionId = window.sessionStorage.getItem("kittynest:agent-session") ?? "";
+
+    act(() => {
+      emitAgentEvent({
+        sessionId,
+        type: "permission_request",
+        requestId: "permission-1",
+        title: "File Permission",
+        description: "Read outside project?",
+        options: [{ label: "Allow", value: "allow" }, { label: "Deny", value: "deny" }],
+      });
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: /^allow$/i }));
+
+    await waitFor(() => expect(resolve).toHaveBeenCalledWith(sessionId, "permission-1", "allow", ""));
+    expect(screen.queryByText("Read outside project?")).not.toBeInTheDocument();
+  });
+
+  it("shows context shares in the context tooltip", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue({
+      ...state,
+      projects: [{ ...state.projects[0], reviewStatus: "reviewed" }],
+    });
+
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: /^assistant$/i }));
+    const sessionId = window.sessionStorage.getItem("kittynest:agent-session") ?? "";
+    act(() => {
+      emitAgentEvent({
+        sessionId,
+        type: "done",
+        reply: "ok",
+        context: {
+          usedTokens: 1000,
+          maxTokens: 4000,
+          thinkingTokens: 125,
+          breakdown: { system: 250, user: 250, assistant: 300, tool: 75 },
+        },
+      });
+    });
+
+    await userEvent.hover(screen.getByLabelText(/context usage/i));
+
+    expect(screen.getByText(/system: 25.0%/i)).toBeInTheDocument();
+    expect(screen.getByText(/thinking: 12.5%/i)).toBeInTheDocument();
+  });
 });
+
+function emitAgentEvent(payload: unknown) {
+  window.dispatchEvent(new CustomEvent("kittynest-agent-event", { detail: payload }));
+}
