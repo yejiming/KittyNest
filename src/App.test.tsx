@@ -1425,7 +1425,7 @@ describe("assistant drawer", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /thinking/i }));
     expect(screen.getAllByText(/finished reasoning/i).length).toBeGreaterThan(1);
-    await userEvent.click(screen.getByRole("button", { name: /read_file src\/app\.tsx/i }));
+    await userEvent.click(screen.getByRole("button", { name: /read_file done/i }));
     expect(screen.getByText(/import React/i)).toBeInTheDocument();
   });
 
@@ -1469,7 +1469,7 @@ describe("assistant drawer", () => {
     });
 
     expect(screen.getAllByRole("button", { name: /thinking/i })).toHaveLength(1);
-    expect(screen.getAllByRole("button", { name: /read_file src\/app\.tsx/i })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /read_file done/i })).toHaveLength(1);
     expect(screen.getAllByText("Hello")).toHaveLength(1);
   });
 
@@ -1495,6 +1495,31 @@ describe("assistant drawer", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /tool/i }));
     expect(screen.getByText(/late result/i)).toBeInTheDocument();
+  });
+
+  it("shows only the tool name and status while collapsed", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue({
+      ...state,
+      projects: [{ ...state.projects[0], reviewStatus: "reviewed" }],
+    });
+
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: /^assistant$/i }));
+    const sessionId = window.sessionStorage.getItem("kittynest:agent-session") ?? "";
+
+    act(() => {
+      emitAgentEvent({
+        sessionId,
+        type: "tool_start",
+        toolCallId: "call_1",
+        name: "read_file",
+        arguments: { file_path: "src/App.tsx" },
+        summary: "read_file src/App.tsx",
+      });
+    });
+
+    expect(screen.getByRole("button", { name: /^read_file running$/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /src\/app\.tsx/i })).not.toBeInTheDocument();
   });
 
   it("resolves permission cards and removes them after selection", async () => {

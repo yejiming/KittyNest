@@ -516,7 +516,7 @@ function AgentMessageView({
     );
   }
   if (message.role === "thinking" || message.role === "tool") {
-    const title = message.role === "thinking" ? "Thinking" : message.summary || message.name || "Tool";
+    const title = message.role === "thinking" ? "Thinking" : message.name || "Tool";
     return (
       <article className={`agent-fold-card ${message.role}`}>
         <button onClick={onToggle}>

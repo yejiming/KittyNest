@@ -282,6 +282,7 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
         &self,
         session_id: &str,
         project_root: PathBuf,
+        project_summary_root: PathBuf,
         settings: crate::models::LlmSettings,
         user_input: &str,
         mut llm: F,
@@ -292,8 +293,14 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
             &mut dyn FnMut(&str),
         ) -> anyhow::Result<llm::AssistantLlmResponse>,
     {
-        if let Err(error) = self.run_inner(session_id, project_root, settings, user_input, &mut llm)
-        {
+        if let Err(error) = self.run_inner(
+            session_id,
+            project_root,
+            project_summary_root,
+            settings,
+            user_input,
+            &mut llm,
+        ) {
             self.emit_error(session_id, &error.to_string(), None);
         }
     }
@@ -302,6 +309,7 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
         &self,
         session_id: String,
         project_root: PathBuf,
+        project_summary_root: PathBuf,
         settings: crate::models::LlmSettings,
         message: String,
     ) {
@@ -311,6 +319,7 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
             registry.run_with_llm_for_tests(
                 &session_id,
                 project_root,
+                project_summary_root,
                 settings,
                 &message,
                 move |messages, tools, on_token| {
@@ -326,6 +335,7 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
         &self,
         session_id: &str,
         project_root: PathBuf,
+        project_summary_root: PathBuf,
         settings: crate::models::LlmSettings,
         user_input: &str,
         llm: &mut F,
@@ -338,7 +348,7 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
         ) -> anyhow::Result<llm::AssistantLlmResponse>,
     {
         let run_id = self.begin_user_turn(session_id, user_input);
-        let system_prompt = assistant_system_prompt(&project_root);
+        let system_prompt = assistant_system_prompt(&project_summary_root);
         let max_context = if settings.max_context == 0 {
             128_000
         } else {
@@ -427,7 +437,8 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
                     self.emit(payload);
                 }
 
-                let mut env = ToolEnvironment::new(project_root.clone());
+                let mut env =
+                    ToolEnvironment::new(project_root.clone(), project_summary_root.clone());
                 env.todos = self.todos(session_id);
                 let permission_registry = self.clone();
                 let permission_session_id = session_id.to_string();
@@ -758,10 +769,10 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
     }
 }
 
-fn assistant_system_prompt(project_root: &std::path::Path) -> String {
+fn assistant_system_prompt(project_summary_root: &std::path::Path) -> String {
     format!(
-        "You are KittyNest Task Assistant. Help with the selected reviewed project.\nProject root: {}\nUse tools when reading project files or tracking work. Ask the user when a decision is required.",
-        project_root.display()
+        "You are KittyNest Task Assistant. Help with the selected reviewed project.\nProject summary root: {}\nUse tools when reading project summary files or tracking work. Ask the user when a decision is required.",
+        project_summary_root.display()
     )
 }
 
@@ -914,9 +925,11 @@ mod tests {
         let registry = super::AgentRegistry::new_for_tests(emitter.clone());
         let settings = crate::config::default_llm_settings();
         let project_root = tempfile::tempdir().unwrap();
+        let summary_root = tempfile::tempdir().unwrap();
         registry.run_with_llm_for_tests(
             "session-1",
             project_root.path().to_path_buf(),
+            summary_root.path().to_path_buf(),
             settings,
             "hello",
             |_messages, _tools, on_token| {
@@ -939,11 +952,13 @@ mod tests {
         let registry = super::AgentRegistry::new_for_tests(emitter.clone());
         let settings = crate::config::default_llm_settings();
         let project_root = tempfile::tempdir().unwrap();
+        let summary_root = tempfile::tempdir().unwrap();
         let mut rounds = 0;
 
         registry.run_with_llm_for_tests(
             "session-1",
             project_root.path().to_path_buf(),
+            summary_root.path().to_path_buf(),
             settings,
             "plan",
             |_messages, _tools, _on_token| {
@@ -980,11 +995,13 @@ mod tests {
         let registry = super::AgentRegistry::new_for_tests(VecEmitter::default());
         let settings = crate::config::default_llm_settings();
         let project_root = tempfile::tempdir().unwrap();
+        let summary_root = tempfile::tempdir().unwrap();
         let stop_registry = registry.clone();
 
         registry.run_with_llm_for_tests(
             "session-1",
             project_root.path().to_path_buf(),
+            summary_root.path().to_path_buf(),
             settings.clone(),
             "read a file",
             move |_messages, _tools, _on_token| {
@@ -1005,6 +1022,7 @@ mod tests {
         registry.run_with_llm_for_tests(
             "session-1",
             project_root.path().to_path_buf(),
+            summary_root.path().to_path_buf(),
             settings,
             "try again",
             move |messages, _tools, _on_token| {
@@ -1021,5 +1039,38 @@ mod tests {
             .iter()
             .any(|message| message.get("tool_calls").is_some()));
         assert_eq!(messages.last().unwrap()["content"], "try again");
+    }
+
+    #[test]
+    fn system_prompt_uses_summary_root_not_code_root() {
+        let registry = super::AgentRegistry::new_for_tests(VecEmitter::default());
+        let settings = crate::config::default_llm_settings();
+        let project_root = tempfile::tempdir().unwrap();
+        let summary_root = tempfile::tempdir().unwrap();
+        let captured = Arc::new(Mutex::new(String::new()));
+        let captured_prompt = Arc::clone(&captured);
+
+        registry.run_with_llm_for_tests(
+            "session-1",
+            project_root.path().to_path_buf(),
+            summary_root.path().to_path_buf(),
+            settings,
+            "hello",
+            move |messages, _tools, _on_token| {
+                *captured_prompt.lock().unwrap() = messages[0]["content"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
+                Ok(super::llm::AssistantLlmResponse {
+                    content: "ok".into(),
+                    tool_calls: Vec::new(),
+                })
+            },
+        );
+
+        let prompt = captured.lock().unwrap();
+        assert!(prompt.contains(&summary_root.path().display().to_string()));
+        assert!(!prompt.contains(&project_root.path().display().to_string()));
+        assert!(prompt.contains("Project summary root"));
     }
 }

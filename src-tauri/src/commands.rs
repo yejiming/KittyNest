@@ -210,13 +210,19 @@ pub fn start_agent_run(
     message: String,
     services: State<'_, AppServices>,
 ) -> CommandResult<serde_json::Value> {
-    let project_root =
-        assistant_project_root(&services.paths, &project_slug).map_err(to_command_error)?;
+    let (project_root, project_summary_root) =
+        assistant_project_paths(&services.paths, &project_slug).map_err(to_command_error)?;
     let settings = crate::config::resolve_llm_settings(
         &crate::config::read_llm_settings(&services.paths).map_err(to_command_error)?,
         crate::config::LlmScenario::Assistant,
     );
-    assistant_registry(app).start_run(session_id, project_root, settings, message);
+    assistant_registry(app).start_run(
+        session_id,
+        project_root,
+        project_summary_root,
+        settings,
+        message,
+    );
     Ok(serde_json::json!({"started": true}))
 }
 
@@ -531,10 +537,10 @@ fn scan_sources_into_db(
     Ok((codex_found, claude_found, inserted))
 }
 
-pub(crate) fn assistant_project_root(
+pub(crate) fn assistant_project_paths(
     paths: &crate::models::AppPaths,
     project_slug: &str,
-) -> anyhow::Result<std::path::PathBuf> {
+) -> anyhow::Result<(std::path::PathBuf, std::path::PathBuf)> {
     let connection = crate::db::open(paths)?;
     crate::db::migrate(&connection)?;
     let Some((_project_id, project)) = crate::db::get_project_by_slug(&connection, project_slug)?
@@ -544,7 +550,9 @@ pub(crate) fn assistant_project_root(
     if project.review_status != "reviewed" {
         anyhow::bail!("Task Assistant requires a reviewed project");
     }
-    Ok(std::path::PathBuf::from(project.workdir))
+    let summary_root = paths.projects_dir.join(project_slug);
+    std::fs::create_dir_all(&summary_root)?;
+    Ok((std::path::PathBuf::from(project.workdir), summary_root))
 }
 
 fn read_markdown_file_inner(paths: &crate::models::AppPaths, path: &str) -> anyhow::Result<String> {
@@ -716,7 +724,7 @@ mod tests {
     }
 
     #[test]
-    fn assistant_project_root_requires_reviewed_project() {
+    fn assistant_project_paths_requires_reviewed_project() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
         crate::config::initialize_workspace(&paths).unwrap();
@@ -745,11 +753,52 @@ mod tests {
         )
         .unwrap();
 
-        let error = super::assistant_project_root(&paths, "app")
+        let error = super::assistant_project_paths(&paths, "app")
             .unwrap_err()
             .to_string();
 
         assert!(error.contains("reviewed"));
+    }
+
+    #[test]
+    fn assistant_project_paths_return_code_and_summary_roots() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
+        crate::config::initialize_workspace(&paths).unwrap();
+        let mut connection = crate::db::open(&paths).unwrap();
+        crate::db::migrate(&connection).unwrap();
+        let project_dir = temp.path().join("app");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        crate::db::upsert_raw_sessions(
+            &mut connection,
+            &[RawSession {
+                source: "codex".into(),
+                session_id: "assistant-reviewed-project".into(),
+                workdir: project_dir.to_string_lossy().to_string(),
+                created_at: "2026-04-28T00:00:00Z".into(),
+                updated_at: "2026-04-28T00:00:01Z".into(),
+                raw_path: temp
+                    .path()
+                    .join("session.jsonl")
+                    .to_string_lossy()
+                    .to_string(),
+                messages: vec![RawMessage {
+                    role: "user".into(),
+                    content: "hello".into(),
+                }],
+            }],
+        )
+        .unwrap();
+        let (project_id, _) = crate::db::get_project_by_slug(&connection, "app")
+            .unwrap()
+            .unwrap();
+        crate::db::update_project_review(&connection, project_id, "/tmp/info.md").unwrap();
+
+        let (code_root, summary_root) = super::assistant_project_paths(&paths, "app").unwrap();
+
+        assert_eq!(code_root, project_dir);
+        assert_eq!(summary_root, paths.projects_dir.join("app"));
+        assert!(summary_root.exists());
     }
 
     #[test]
