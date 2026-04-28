@@ -1473,6 +1473,41 @@ describe("assistant drawer", () => {
     expect(screen.getAllByText("Hello")).toHaveLength(1);
   });
 
+  it("does not replace earlier tool-call assistant text with the final reply", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue({
+      ...state,
+      projects: [{ ...state.projects[0], reviewStatus: "reviewed" }],
+    });
+
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: /^assistant$/i }));
+    const sessionId = window.sessionStorage.getItem("kittynest:agent-session") ?? "";
+
+    act(() => {
+      emitAgentEvent({ sessionId, type: "token", delta: "I will inspect the summary." });
+      emitAgentEvent({
+        sessionId,
+        type: "tool_start",
+        toolCallId: "call_1",
+        name: "grep",
+        arguments: { pattern: "needle" },
+        summary: "grep needle",
+      });
+      emitAgentEvent({
+        sessionId,
+        type: "tool_end",
+        toolCallId: "call_1",
+        status: "done",
+        resultPreview: "notes.md:1: needle",
+      });
+      emitAgentEvent({ sessionId, type: "token", delta: "Final answer" });
+      emitAgentEvent({ sessionId, type: "done", reply: "Final answer" });
+    });
+
+    expect(screen.getByText("I will inspect the summary.")).toBeInTheDocument();
+    expect(screen.getAllByText("Final answer")).toHaveLength(1);
+  });
+
   it("shows a completed tool card even when only the end event arrives", async () => {
     vi.spyOn(api, "getAppState").mockResolvedValue({
       ...state,

@@ -5,7 +5,7 @@ use super::{function_schema, resolve_tool_path, walk_files, ToolEnvironment};
 pub fn schema() -> serde_json::Value {
     function_schema(
         "grep",
-        "Search file contents with regex.",
+        "Search project summary file contents with regex.",
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -28,8 +28,8 @@ pub fn execute(arguments: serde_json::Value, env: &mut ToolEnvironment) -> Strin
     };
     let base = match resolve_tool_path(
         arguments.get("path").and_then(serde_json::Value::as_str),
-        &env.project_root.clone(),
-        &env.project_root.clone(),
+        &env.project_summary_root.clone(),
+        &env.project_summary_root.clone(),
         env,
     ) {
         Ok(path) => path,

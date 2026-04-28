@@ -3,7 +3,7 @@ use super::{function_schema, resolve_tool_path, ToolEnvironment};
 pub fn schema() -> serde_json::Value {
     function_schema(
         "glob",
-        "Find files matching a glob pattern.",
+        "Find project summary files matching a glob pattern.",
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -21,8 +21,8 @@ pub fn execute(arguments: serde_json::Value, env: &mut ToolEnvironment) -> Strin
     };
     let base = match resolve_tool_path(
         arguments.get("path").and_then(serde_json::Value::as_str),
-        &env.project_root.clone(),
-        &env.project_root.clone(),
+        &env.project_summary_root.clone(),
+        &env.project_summary_root.clone(),
         env,
     ) {
         Ok(path) => path,

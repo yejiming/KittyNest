@@ -9,7 +9,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -59,6 +59,7 @@ export function AgentDrawer({ open, projects, onClose }: AgentDrawerProps) {
   const [context, setContext] = useState<AgentContextSnapshot>(emptyContext);
   const [todos, setTodos] = useState<AgentTodoItem[]>([]);
   const [todosOpen, setTodosOpen] = useState(true);
+  const messageCounter = useRef(0);
 
   useEffect(() => {
     if (reviewedProjects.length === 0) {
@@ -159,7 +160,7 @@ export function AgentDrawer({ open, projects, onClose }: AgentDrawerProps) {
       }
       return [
         ...current,
-        { id: `assistant-${Date.now()}`, role: "assistant", content: delta, status: "running" },
+        { id: nextMessageId("assistant"), role: "assistant", content: delta, status: "running" },
       ];
     });
   }
@@ -183,7 +184,7 @@ export function AgentDrawer({ open, projects, onClose }: AgentDrawerProps) {
       }
       return [
         ...next,
-        { id: `assistant-${Date.now()}`, role: "assistant", content: finalContent, status },
+        { id: nextMessageId("assistant"), role: "assistant", content: finalContent, status },
       ];
     });
   }
@@ -228,9 +229,9 @@ export function AgentDrawer({ open, projects, onClose }: AgentDrawerProps) {
 
   function upsertMessage(message: AgentMessage) {
     setMessages((current) => {
-      const index = current.findIndex((item) => item.id === message.id);
-      if (index < 0) return [...current, message];
-      const next = [...current];
+      const next = message.role === "tool" ? finishRunningAssistantMessages(current) : [...current];
+      const index = next.findIndex((item) => item.id === message.id);
+      if (index < 0) return [...next, message];
       next[index] = { ...next[index], ...message };
       return next;
     });
@@ -276,7 +277,7 @@ export function AgentDrawer({ open, projects, onClose }: AgentDrawerProps) {
 
     setMessages((current) => [
       ...current,
-      { id: `user-${Date.now()}`, role: "user", content: trimmed },
+      { id: nextMessageId("user"), role: "user", content: trimmed },
     ]);
     setInput("");
     setRunning(true);
@@ -289,6 +290,19 @@ export function AgentDrawer({ open, projects, onClose }: AgentDrawerProps) {
         { id: `error-${Date.now()}`, role: "error", content: error instanceof Error ? error.message : String(error) },
       ]);
     }
+  }
+
+  function nextMessageId(prefix: string) {
+    messageCounter.current += 1;
+    return `${prefix}-${Date.now()}-${messageCounter.current}`;
+  }
+
+  function finishRunningAssistantMessages(current: AgentMessage[]) {
+    return current.map((message) =>
+      message.role === "assistant" && message.status === "running"
+        ? { ...message, status: "done" }
+        : message,
+    );
   }
 
   async function stopRun() {

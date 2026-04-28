@@ -288,6 +288,78 @@ mod tests {
     }
 
     #[test]
+    fn grep_defaults_to_summary_root_without_permission() {
+        let code_root = tempfile::tempdir().unwrap();
+        let summary_root = tempfile::tempdir().unwrap();
+        std::fs::write(summary_root.path().join("notes.md"), "needle").unwrap();
+        let mut env =
+            super::ToolEnvironment::for_tests_with_summary(code_root.path(), summary_root.path());
+
+        let result = super::execute_tool(
+            "grep",
+            serde_json::json!({"pattern": "needle", "include": "*.md"}),
+            &mut env,
+        );
+
+        assert!(result.contains("notes.md:1: needle"));
+        assert!(env.permission_requests.is_empty());
+    }
+
+    #[test]
+    fn grep_requests_permission_for_code_root() {
+        let code_root = tempfile::tempdir().unwrap();
+        let summary_root = tempfile::tempdir().unwrap();
+        std::fs::write(code_root.path().join("src.rs"), "needle").unwrap();
+        let decisions = Arc::new(Mutex::new(vec!["deny".to_string()]));
+        let mut env =
+            super::ToolEnvironment::for_tests_with_summary(code_root.path(), summary_root.path())
+                .with_permission_decisions(decisions);
+
+        let result = super::execute_tool(
+            "grep",
+            serde_json::json!({"pattern": "needle", "path": code_root.path()}),
+            &mut env,
+        );
+
+        assert!(result.contains("User denied permission"));
+        assert_eq!(env.permission_requests.len(), 1);
+    }
+
+    #[test]
+    fn glob_defaults_to_summary_root_without_permission() {
+        let code_root = tempfile::tempdir().unwrap();
+        let summary_root = tempfile::tempdir().unwrap();
+        std::fs::write(summary_root.path().join("notes.md"), "summary").unwrap();
+        let mut env =
+            super::ToolEnvironment::for_tests_with_summary(code_root.path(), summary_root.path());
+
+        let result = super::execute_tool("glob", serde_json::json!({"pattern": "*.md"}), &mut env);
+
+        assert!(result.contains("notes.md"));
+        assert!(env.permission_requests.is_empty());
+    }
+
+    #[test]
+    fn glob_requests_permission_for_code_root() {
+        let code_root = tempfile::tempdir().unwrap();
+        let summary_root = tempfile::tempdir().unwrap();
+        std::fs::write(code_root.path().join("src.rs"), "").unwrap();
+        let decisions = Arc::new(Mutex::new(vec!["deny".to_string()]));
+        let mut env =
+            super::ToolEnvironment::for_tests_with_summary(code_root.path(), summary_root.path())
+                .with_permission_decisions(decisions);
+
+        let result = super::execute_tool(
+            "glob",
+            serde_json::json!({"pattern": "*.rs", "path": code_root.path()}),
+            &mut env,
+        );
+
+        assert!(result.contains("User denied permission"));
+        assert_eq!(env.permission_requests.len(), 1);
+    }
+
+    #[test]
     fn todo_write_stores_unfinished_items() {
         let temp = tempfile::tempdir().unwrap();
         let mut env = super::ToolEnvironment::for_tests(temp.path());
