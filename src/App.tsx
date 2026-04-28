@@ -36,7 +36,6 @@ import kittyAvatar from "../src-tauri/assets/kittynest-cat-avatar.png";
 import memoryPulseBrain from "../src-tauri/assets/memory-pulse-brain.png";
 import tauriJobsCube from "../src-tauri/assets/tauri-jobs-cube.png";
 import {
-  createTask,
   enqueueAnalyzeSessions,
   enqueueAnalyzeSession,
   enqueueAnalyzeProject,
@@ -198,12 +197,6 @@ export default function App() {
       return `Session analysis queued: ${result.total} session${result.total === 1 ? "" : "s"}`;
     });
 
-  const createManualTask = (projectSlug: string, userPrompt: string) =>
-    runQueueAction("Create task", async () => {
-      const result = await createTask(projectSlug, userPrompt);
-      return `Task prompt queued: ${result.taskSlug}`;
-    });
-
   const queueSourceScan = () =>
     runQueueAction("Scan new sessions", async () => {
       const result = await enqueueScanSources();
@@ -345,9 +338,6 @@ export default function App() {
         {view === "tasks" && (
           <TasksList
             tasks={state.tasks}
-            projects={state.projects}
-            busy={busy}
-            onCreate={createManualTask}
             onOpen={(projectSlug, taskSlug) => {
               setSelectedProject(projectSlug);
               setSelectedTask(taskSlug);
@@ -599,64 +589,13 @@ function ProjectsList({ projects, onOpen }: { projects: ProjectRecord[]; onOpen:
 
 function TasksList({
   tasks,
-  projects,
-  busy,
-  onCreate,
   onOpen,
 }: {
   tasks: TaskRecord[];
-  projects: ProjectRecord[];
-  busy: string | null;
-  onCreate: (projectSlug: string, userPrompt: string) => void;
   onOpen: (projectSlug: string, taskSlug: string) => void;
 }) {
-  const reviewedProjects = projects.filter((project) => project.reviewStatus === "reviewed");
-  const [projectSlug, setProjectSlug] = useState(reviewedProjects[0]?.slug ?? "");
-  const [userPrompt, setUserPrompt] = useState("");
-  useEffect(() => {
-    if (!projectSlug && reviewedProjects[0]) {
-      setProjectSlug(reviewedProjects[0].slug);
-    }
-  }, [projectSlug, reviewedProjects]);
-  const canCreate = Boolean(projectSlug && userPrompt.trim());
   return (
     <section className="detail-layout">
-      <div className="panel wide">
-        <PanelTitle title="Create Task" />
-        <div className="task-create-form">
-          <label>
-            Project
-            <select
-              value={projectSlug}
-              onChange={(event) => setProjectSlug(event.target.value)}
-              disabled={!reviewedProjects.length}
-            >
-              {reviewedProjects.map((project) => (
-                <option key={project.slug} value={project.slug}>{project.displayTitle}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Task Prompt
-            <textarea
-              value={userPrompt}
-              onChange={(event) => setUserPrompt(event.target.value)}
-              placeholder="Describe the task you want KittyNest to refine."
-            />
-          </label>
-          <IconButton
-            label="Create Task"
-            icon={<CircleDot size={16} />}
-            onClick={() => {
-              onCreate(projectSlug, userPrompt.trim());
-              setUserPrompt("");
-            }}
-            busy={busy === "Create task"}
-            disabled={!canCreate}
-          />
-          {!reviewedProjects.length && <EmptyLine text="Review a project before creating tasks." />}
-        </div>
-      </div>
       <div className="panel wide">
         <PanelTitle title="Tasks" />
         <div className="list-page data-table tasks-table" role="table">

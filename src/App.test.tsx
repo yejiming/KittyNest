@@ -311,31 +311,23 @@ describe("KittyNest dashboard", () => {
     expect(screen.getByRole("button", { name: /import sessions/i })).toBeInTheDocument();
   });
 
-  it("creates a manual task from the tasks list for reviewed projects", async () => {
+  it("shows the tasks table without create task controls", async () => {
     vi.spyOn(api, "getAppState").mockResolvedValue({
       ...state,
       projects: [{ ...state.projects[0], reviewStatus: "reviewed" }],
     });
-    const createTask = vi
-      .spyOn(api as ApiWithReviewQueue, "createTask")
-      .mockResolvedValue({
-        projectSlug: "KittyNest",
-        taskSlug: "ship-next-milestone",
-        jobId: 12,
-        total: 1,
-        userPromptPath: "/Users/kc/.kittynest/projects/KittyNest/tasks/ship-next-milestone/user_prompt.md",
-        llmPromptPath: "/Users/kc/.kittynest/projects/KittyNest/tasks/ship-next-milestone/llm_prompt.md",
-      });
+    const createTask = vi.spyOn(api as ApiWithReviewQueue, "createTask");
 
     render(<App />);
 
     await userEvent.click(await screen.findByRole("button", { name: /^tasks$/i }));
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: /project/i }), "KittyNest");
-    await userEvent.type(screen.getByLabelText(/task prompt/i), "Ship next milestone");
-    await userEvent.click(screen.getByRole("button", { name: /^create task$/i }));
 
-    await waitFor(() => expect(createTask).toHaveBeenCalledWith("KittyNest", "Ship next milestone"));
-    expect(await screen.findByText(/task prompt queued: ship-next-milestone/i)).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { name: "Tasks" }).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: /session ingest/i })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Create Task" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/task prompt/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^create task$/i })).not.toBeInTheDocument();
+    expect(createTask).not.toHaveBeenCalled();
   });
 
   it("renders project summary and progress markdown content", async () => {

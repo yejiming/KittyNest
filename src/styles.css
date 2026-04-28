@@ -217,8 +217,7 @@ button {
 .jobs-table,
 .list-page,
 .markdown-scroll,
-.markdown-body pre,
-.task-create-form textarea {
+.markdown-body pre {
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
   scrollbar-width: auto;
 }
@@ -227,8 +226,7 @@ button {
 .jobs-table::-webkit-scrollbar,
 .list-page::-webkit-scrollbar,
 .markdown-scroll::-webkit-scrollbar,
-.markdown-body pre::-webkit-scrollbar,
-.task-create-form textarea::-webkit-scrollbar {
+.markdown-body pre::-webkit-scrollbar {
   height: 14px;
   width: 14px;
 }
@@ -237,8 +235,7 @@ button {
 .jobs-table::-webkit-scrollbar-track,
 .list-page::-webkit-scrollbar-track,
 .markdown-scroll::-webkit-scrollbar-track,
-.markdown-body pre::-webkit-scrollbar-track,
-.task-create-form textarea::-webkit-scrollbar-track {
+.markdown-body pre::-webkit-scrollbar-track {
   background-color: rgba(2, 7, 9, 0.82);
 }
 
@@ -246,8 +243,7 @@ button {
 .jobs-table::-webkit-scrollbar-thumb,
 .list-page::-webkit-scrollbar-thumb,
 .markdown-scroll::-webkit-scrollbar-thumb,
-.markdown-body pre::-webkit-scrollbar-thumb,
-.task-create-form textarea::-webkit-scrollbar-thumb {
+.markdown-body pre::-webkit-scrollbar-thumb {
   background-color: #00d8ff;
   border: 3px solid var(--scrollbar-thumb-border);
   border-radius: 999px;
@@ -260,8 +256,7 @@ button {
 .jobs-table::-webkit-scrollbar-thumb:hover,
 .list-page::-webkit-scrollbar-thumb:hover,
 .markdown-scroll::-webkit-scrollbar-thumb:hover,
-.markdown-body pre::-webkit-scrollbar-thumb:hover,
-.task-create-form textarea::-webkit-scrollbar-thumb:hover {
+.markdown-body pre::-webkit-scrollbar-thumb:hover {
   background-color: #7fff5e;
   box-shadow:
     inset 0 0 0 1px rgba(255, 255, 255, 0.28),
@@ -272,8 +267,7 @@ button {
 .jobs-table::-webkit-scrollbar-corner,
 .list-page::-webkit-scrollbar-corner,
 .markdown-scroll::-webkit-scrollbar-corner,
-.markdown-body pre::-webkit-scrollbar-corner,
-.task-create-form textarea::-webkit-scrollbar-corner {
+.markdown-body pre::-webkit-scrollbar-corner {
   background: var(--scrollbar-track);
 }
 
@@ -1003,28 +997,6 @@ button {
   gap: 12px;
   grid-column: span 2;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.task-create-form {
-  align-items: end;
-  display: grid;
-  gap: 12px;
-  grid-template-columns: minmax(180px, 0.7fr) minmax(320px, 1.5fr) auto;
-}
-
-.task-create-form label {
-  display: grid;
-  gap: 7px;
-}
-
-.task-create-form textarea {
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(116, 255, 241, 0.22);
-  border-radius: 8px;
-  color: #e9fbff;
-  min-height: 72px;
-  padding: 10px 12px;
-  resize: vertical;
 }
 
 .task-meta {
