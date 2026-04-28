@@ -1,10 +1,28 @@
-use tauri::State;
+use std::sync::OnceLock;
+
+use tauri::{Emitter, State};
 
 use crate::{
     errors::{to_command_error, CommandResult},
     models::{AppStateDto, LlmSettings, SourceStatus},
     services::AppServices,
 };
+
+#[derive(Clone)]
+pub struct TauriAgentEmitter {
+    app: tauri::AppHandle,
+}
+
+impl crate::assistant::AgentEventEmitter for TauriAgentEmitter {
+    fn emit(&self, event: &crate::assistant::AgentEvent) {
+        let _ = self.app.emit("agent://event", event);
+    }
+}
+
+fn assistant_registry(app: tauri::AppHandle) -> &'static crate::assistant::AgentRegistry<TauriAgentEmitter> {
+    static REGISTRY: OnceLock<crate::assistant::AgentRegistry<TauriAgentEmitter>> = OnceLock::new();
+    REGISTRY.get_or_init(|| crate::assistant::AgentRegistry::new(TauriAgentEmitter { app }))
+}
 
 #[tauri::command]
 pub fn get_app_state(services: State<'_, AppServices>) -> CommandResult<AppStateDto> {
@@ -180,6 +198,64 @@ pub fn stop_job(job_id: i64, services: State<'_, AppServices>) -> CommandResult<
     crate::db::cancel_job(&connection, job_id)
         .map(|stopped| serde_json::json!({ "stopped": stopped }))
         .map_err(to_command_error)
+}
+
+#[tauri::command]
+pub fn start_agent_run(
+    app: tauri::AppHandle,
+    session_id: String,
+    project_slug: String,
+    message: String,
+    services: State<'_, AppServices>,
+) -> CommandResult<serde_json::Value> {
+    let project_root =
+        assistant_project_root(&services.paths, &project_slug).map_err(to_command_error)?;
+    let settings = crate::config::resolve_llm_settings(
+        &crate::config::read_llm_settings(&services.paths).map_err(to_command_error)?,
+        crate::config::LlmScenario::Assistant,
+    );
+    assistant_registry(app).start_run(session_id, project_root, settings, message);
+    Ok(serde_json::json!({"started": true}))
+}
+
+#[tauri::command]
+pub fn stop_agent_run(
+    app: tauri::AppHandle,
+    session_id: String,
+    _services: State<'_, AppServices>,
+) -> CommandResult<serde_json::Value> {
+    let stopped = assistant_registry(app).stop_run(&session_id);
+    Ok(serde_json::json!({ "stopped": stopped }))
+}
+
+#[tauri::command]
+pub fn resolve_agent_permission(
+    app: tauri::AppHandle,
+    session_id: String,
+    request_id: String,
+    value: String,
+    supplemental_info: String,
+    _services: State<'_, AppServices>,
+) -> CommandResult<serde_json::Value> {
+    let resolved = assistant_registry(app).resolve_permission(
+        &session_id,
+        &request_id,
+        &value,
+        &supplemental_info,
+    );
+    Ok(serde_json::json!({ "resolved": resolved }))
+}
+
+#[tauri::command]
+pub fn resolve_agent_ask_user(
+    app: tauri::AppHandle,
+    session_id: String,
+    request_id: String,
+    answers: serde_json::Value,
+    _services: State<'_, AppServices>,
+) -> CommandResult<serde_json::Value> {
+    let resolved = assistant_registry(app).resolve_ask_user(&session_id, &request_id, answers);
+    Ok(serde_json::json!({ "resolved": resolved }))
 }
 
 #[tauri::command]
@@ -454,6 +530,22 @@ fn scan_sources_into_db(
     Ok((codex_found, claude_found, inserted))
 }
 
+pub(crate) fn assistant_project_root(
+    paths: &crate::models::AppPaths,
+    project_slug: &str,
+) -> anyhow::Result<std::path::PathBuf> {
+    let connection = crate::db::open(paths)?;
+    crate::db::migrate(&connection)?;
+    let Some((_project_id, project)) = crate::db::get_project_by_slug(&connection, project_slug)?
+    else {
+        anyhow::bail!("Project not found: {project_slug}");
+    };
+    if project.review_status != "reviewed" {
+        anyhow::bail!("Task Assistant requires a reviewed project");
+    }
+    Ok(std::path::PathBuf::from(project.workdir))
+}
+
 fn read_markdown_file_inner(paths: &crate::models::AppPaths, path: &str) -> anyhow::Result<String> {
     let requested = std::path::PathBuf::from(path);
     let canonical = requested.canonicalize()?;
@@ -626,6 +718,39 @@ mod tests {
             .projects
             .iter()
             .any(|project| project.slug == "CodexProject"));
+    }
+
+    #[test]
+    fn assistant_project_root_requires_reviewed_project() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
+        crate::config::initialize_workspace(&paths).unwrap();
+        let mut connection = crate::db::open(&paths).unwrap();
+        crate::db::migrate(&connection).unwrap();
+        let project_dir = temp.path().join("app");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        crate::db::upsert_raw_sessions(
+            &mut connection,
+            &[RawSession {
+                source: "codex".into(),
+                session_id: "assistant-project-root".into(),
+                workdir: project_dir.to_string_lossy().to_string(),
+                created_at: "2026-04-28T00:00:00Z".into(),
+                updated_at: "2026-04-28T00:00:01Z".into(),
+                raw_path: temp.path().join("session.jsonl").to_string_lossy().to_string(),
+                messages: vec![RawMessage {
+                    role: "user".into(),
+                    content: "hello".into(),
+                }],
+            }],
+        )
+        .unwrap();
+
+        let error = super::assistant_project_root(&paths, "app")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("reviewed"));
     }
 
     #[test]
