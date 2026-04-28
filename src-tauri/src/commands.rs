@@ -411,6 +411,7 @@ fn app_state_from_db(
     Ok(AppStateDto {
         data_dir: paths.data_dir.to_string_lossy().to_string(),
         llm_settings: crate::config::read_llm_settings(paths)?,
+        llm_provider_calls: crate::db::list_llm_provider_calls(connection)?,
         provider_presets: crate::presets::provider_presets(),
         source_statuses: source_statuses_with_roots(claude_root, codex_sessions_root),
         stats: crate::db::dashboard_stats(&connection)?,

@@ -10,7 +10,7 @@ pub enum LlmScenario {
     Project,
     Session,
     Memory,
-    Task,
+    Assistant,
 }
 
 pub fn default_paths() -> AppPaths {
@@ -91,7 +91,19 @@ pub fn read_llm_settings(paths: &AppPaths) -> anyhow::Result<LlmSettings> {
     settings.models = llm
         .and_then(|table| table.get("models"))
         .and_then(toml::Value::as_array)
-        .map(|items| items.iter().filter_map(model_from_toml).collect())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    model_from_toml(
+                        item,
+                        settings.max_context,
+                        settings.max_tokens,
+                        settings.temperature,
+                    )
+                })
+                .collect()
+        })
         .unwrap_or_default();
 
     if let Some(scenario) = llm
@@ -102,7 +114,8 @@ pub fn read_llm_settings(paths: &AppPaths) -> anyhow::Result<LlmSettings> {
         settings.scenario_models.project_model = scenario_string(scenario, "project_model");
         settings.scenario_models.session_model = scenario_string(scenario, "session_model");
         settings.scenario_models.memory_model = scenario_string(scenario, "memory_model");
-        settings.scenario_models.task_model = scenario_string(scenario, "task_model");
+        settings.scenario_models.assistant_model = scenario_string(scenario, "assistant_model")
+            .if_empty_then(|| scenario_string(scenario, "task_model"));
     }
 
     if settings.models.is_empty()
@@ -111,8 +124,11 @@ pub fn read_llm_settings(paths: &AppPaths) -> anyhow::Result<LlmSettings> {
         settings.models.push(model_from_settings(&settings));
     }
     if settings.scenario_models.default_model.trim().is_empty() {
-        settings.scenario_models.default_model =
-            settings.models.first().map(|model| model.id.clone()).unwrap_or_default();
+        settings.scenario_models.default_model = settings
+            .models
+            .first()
+            .map(|model| model.id.clone())
+            .unwrap_or_default();
     }
     if let Some(model) = default_model(&settings).cloned() {
         apply_model(&mut settings, &model);
@@ -133,29 +149,22 @@ pub fn write_llm_settings(paths: &AppPaths, settings: &LlmSettings) -> anyhow::R
                 "base_url": model.base_url.clone(),
                 "interface": model.interface.clone(),
                 "model": model.model.clone(),
-                "api_key": model.api_key.clone()
+                "api_key": model.api_key.clone(),
+                "max_context": model.max_context,
+                "max_tokens": model.max_tokens,
+                "temperature": model.temperature
             })
         })
         .collect::<Vec<_>>();
     let config = serde_json::json!({
         "llm": {
-            "id": settings.id.clone(),
-            "remark": settings.remark.clone(),
-            "provider": settings.provider.clone(),
-            "base_url": settings.base_url.clone(),
-            "interface": settings.interface.clone(),
-            "model": settings.model.clone(),
-            "api_key": settings.api_key.clone(),
-            "max_context": settings.max_context,
-            "max_tokens": settings.max_tokens,
-            "temperature": settings.temperature,
             "models": models,
             "scenario_models": {
                 "default_model": settings.scenario_models.default_model.clone(),
                 "project_model": settings.scenario_models.project_model.clone(),
                 "session_model": settings.scenario_models.session_model.clone(),
                 "memory_model": settings.scenario_models.memory_model.clone(),
-                "task_model": settings.scenario_models.task_model.clone()
+                "assistant_model": settings.scenario_models.assistant_model.clone()
             }
         }
     });
@@ -181,7 +190,7 @@ pub fn default_llm_settings() -> LlmSettings {
             project_model: String::new(),
             session_model: String::new(),
             memory_model: String::new(),
-            task_model: String::new(),
+            assistant_model: String::new(),
         },
     }
 }
@@ -192,7 +201,7 @@ pub fn resolve_llm_settings(settings: &LlmSettings, scenario: LlmScenario) -> Ll
         LlmScenario::Project => &settings.scenario_models.project_model,
         LlmScenario::Session => &settings.scenario_models.session_model,
         LlmScenario::Memory => &settings.scenario_models.memory_model,
-        LlmScenario::Task => &settings.scenario_models.task_model,
+        LlmScenario::Assistant => &settings.scenario_models.assistant_model,
     };
     let model = settings
         .models
@@ -224,6 +233,21 @@ fn apply_model(settings: &mut LlmSettings, model: &LlmModelSettings) {
     settings.interface = model.interface.clone();
     settings.model = model.model.clone();
     settings.api_key = model.api_key.clone();
+    settings.max_context = if model.max_context == 0 {
+        DEFAULT_MAX_CONTEXT
+    } else {
+        model.max_context
+    };
+    settings.max_tokens = if model.max_tokens == 0 {
+        DEFAULT_MAX_TOKENS
+    } else {
+        model.max_tokens
+    };
+    settings.temperature = if model.temperature.is_finite() {
+        model.temperature
+    } else {
+        DEFAULT_TEMPERATURE
+    };
 }
 
 fn model_from_settings(settings: &LlmSettings) -> LlmModelSettings {
@@ -243,10 +267,18 @@ fn model_from_settings(settings: &LlmSettings) -> LlmModelSettings {
         interface: settings.interface.clone(),
         model: settings.model.clone(),
         api_key: settings.api_key.clone(),
+        max_context: settings.max_context,
+        max_tokens: settings.max_tokens,
+        temperature: settings.temperature,
     }
 }
 
-fn model_from_toml(value: &toml::Value) -> Option<LlmModelSettings> {
+fn model_from_toml(
+    value: &toml::Value,
+    default_max_context: usize,
+    default_max_tokens: usize,
+    default_temperature: f64,
+) -> Option<LlmModelSettings> {
     let table = value.as_table()?;
     let provider = table_string(table, "provider");
     let remark = table_string(table, "remark");
@@ -261,6 +293,9 @@ fn model_from_toml(value: &toml::Value) -> Option<LlmModelSettings> {
         interface: table_string(table, "interface").if_empty_then(|| "openai".into()),
         model: table_string(table, "model"),
         api_key: table_string(table, "api_key"),
+        max_context: table_integer(table, "max_context").unwrap_or(default_max_context),
+        max_tokens: table_integer(table, "max_tokens").unwrap_or(default_max_tokens),
+        temperature: table_float(table, "temperature").unwrap_or(default_temperature),
     })
 }
 
@@ -274,6 +309,21 @@ fn table_string(table: &toml::map::Map<String, toml::Value>, key: &str) -> Strin
         .and_then(toml::Value::as_str)
         .unwrap_or("")
         .to_string()
+}
+
+fn table_integer(table: &toml::map::Map<String, toml::Value>, key: &str) -> Option<usize> {
+    table
+        .get(key)
+        .and_then(toml::Value::as_integer)
+        .and_then(|value| usize::try_from(value).ok())
+}
+
+fn table_float(table: &toml::map::Map<String, toml::Value>, key: &str) -> Option<f64> {
+    table.get(key).and_then(|value| {
+        value
+            .as_float()
+            .or_else(|| value.as_integer().map(|value| value as f64))
+    })
 }
 
 fn llm_model_id(provider: &str, remark: &str) -> String {
@@ -323,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn persists_saved_models_global_limits_and_scenario_fallbacks() {
+    fn persists_saved_models_with_per_model_limits_and_scenario_fallbacks() {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
         let mut settings = default_llm_settings();
@@ -331,9 +381,9 @@ mod tests {
         settings.remark = "Fast".into();
         settings.model = "openai/gpt-4o-mini".into();
         settings.api_key = "sk-openrouter".into();
-        settings.max_context = 64_000;
-        settings.max_tokens = 2_048;
-        settings.temperature = 0.45;
+        settings.max_context = 32_000;
+        settings.max_tokens = 1_024;
+        settings.temperature = 0.2;
         settings.models = vec![
             LlmModelSettings {
                 id: "openrouter-fast".into(),
@@ -343,6 +393,9 @@ mod tests {
                 interface: "openai".into(),
                 model: "openai/gpt-4o-mini".into(),
                 api_key: "sk-openrouter".into(),
+                max_context: 64_000,
+                max_tokens: 2_048,
+                temperature: 0.45,
             },
             LlmModelSettings {
                 id: "anthropic-deep".into(),
@@ -352,12 +405,47 @@ mod tests {
                 interface: "anthropic".into(),
                 model: "claude-3-5-sonnet-latest".into(),
                 api_key: "sk-anthropic".into(),
+                max_context: 200_000,
+                max_tokens: 8_192,
+                temperature: 0.1,
             },
         ];
         settings.scenario_models.default_model = "openrouter-fast".into();
         settings.scenario_models.project_model = "anthropic-deep".into();
+        settings.scenario_models.assistant_model = "openrouter-fast".into();
 
         write_llm_settings(&paths, &settings).unwrap();
+        let text = std::fs::read_to_string(&paths.config_path).unwrap();
+        let value: toml::Value = toml::from_str(&text).unwrap();
+        let llm = value.get("llm").and_then(toml::Value::as_table).unwrap();
+        assert!(llm.get("id").is_none());
+        assert!(llm.get("provider").is_none());
+        assert!(llm.get("max_context").is_none());
+        assert!(llm.get("max_tokens").is_none());
+        assert!(llm.get("temperature").is_none());
+        let scenario = llm
+            .get("scenario_models")
+            .and_then(toml::Value::as_table)
+            .unwrap();
+        assert_eq!(
+            scenario
+                .get("assistant_model")
+                .and_then(toml::Value::as_str),
+            Some("openrouter-fast")
+        );
+        assert!(scenario.get("task_model").is_none());
+        let models = llm.get("models").and_then(toml::Value::as_array).unwrap();
+        assert_eq!(
+            models[0]
+                .get("max_context")
+                .and_then(toml::Value::as_integer),
+            Some(64_000)
+        );
+        assert_eq!(
+            models[1].get("temperature").and_then(toml::Value::as_float),
+            Some(0.1)
+        );
+
         let read = read_llm_settings(&paths).unwrap();
 
         assert_eq!(read.max_context, 64_000);
@@ -369,8 +457,47 @@ mod tests {
             "claude-3-5-sonnet-latest"
         );
         assert_eq!(
+            resolve_llm_settings(&read, LlmScenario::Project).max_tokens,
+            8_192
+        );
+        assert_eq!(
             resolve_llm_settings(&read, LlmScenario::Session).model,
             "openai/gpt-4o-mini"
         );
+    }
+
+    #[test]
+    fn reads_legacy_task_model_as_assistant_model() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
+        std::fs::create_dir_all(&paths.data_dir).unwrap();
+        std::fs::write(
+            &paths.config_path,
+            r#"
+[[llm.models]]
+id = "openrouter-fast"
+remark = "Fast"
+provider = "OpenRouter"
+base_url = "https://openrouter.ai/api/v1"
+interface = "openai"
+model = "openai/gpt-4o-mini"
+api_key = "sk-openrouter"
+max_context = 64000
+max_tokens = 2048
+temperature = 0.45
+
+[llm.scenario_models]
+default_model = "openrouter-fast"
+task_model = "openrouter-fast"
+"#,
+        )
+        .unwrap();
+
+        let read = read_llm_settings(&paths).unwrap();
+
+        assert_eq!(read.scenario_models.assistant_model, "openrouter-fast");
+        assert_eq!(read.models[0].max_context, 64_000);
+        assert_eq!(read.models[0].max_tokens, 2_048);
+        assert_eq!(read.models[0].temperature, 0.45);
     }
 }

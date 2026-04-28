@@ -50,7 +50,7 @@ impl AppPaths {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmModelSettings {
     pub id: String,
@@ -60,6 +60,12 @@ pub struct LlmModelSettings {
     pub interface: String,
     pub model: String,
     pub api_key: String,
+    #[serde(default)]
+    pub max_context: usize,
+    #[serde(default)]
+    pub max_tokens: usize,
+    #[serde(default)]
+    pub temperature: f64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -69,7 +75,8 @@ pub struct LlmScenarioModels {
     pub project_model: String,
     pub session_model: String,
     pub memory_model: String,
-    pub task_model: String,
+    #[serde(default, alias = "taskModel")]
+    pub assistant_model: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -99,6 +106,7 @@ pub struct ProjectRecord {
     pub info_path: Option<String>,
     pub progress_path: Option<String>,
     pub user_preference_path: Option<String>,
+    pub agents_path: Option<String>,
     pub review_status: String,
     pub last_reviewed_at: Option<String>,
     pub last_session_at: Option<String>,
@@ -145,6 +153,13 @@ pub struct DashboardStats {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct ProviderCallCount {
+    pub provider: String,
+    pub calls: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct SourceStatus {
     pub source: String,
     pub path: String,
@@ -156,6 +171,7 @@ pub struct SourceStatus {
 pub struct AppStateDto {
     pub data_dir: String,
     pub llm_settings: LlmSettings,
+    pub llm_provider_calls: Vec<ProviderCallCount>,
     pub provider_presets: Vec<ProviderPreset>,
     pub source_statuses: Vec<SourceStatus>,
     pub stats: DashboardStats,

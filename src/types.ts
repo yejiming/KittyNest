@@ -4,6 +4,11 @@ export interface ProviderPreset {
   interface: string;
 }
 
+export interface ProviderCallCount {
+  provider: string;
+  calls: number;
+}
+
 export interface LlmModelSettings {
   id: string;
   remark: string;
@@ -12,6 +17,9 @@ export interface LlmModelSettings {
   interface: string;
   model: string;
   apiKey: string;
+  maxContext: number;
+  maxTokens: number;
+  temperature: number;
 }
 
 export interface LlmScenarioModels {
@@ -19,13 +27,10 @@ export interface LlmScenarioModels {
   projectModel: string;
   sessionModel: string;
   memoryModel: string;
-  taskModel: string;
+  assistantModel: string;
 }
 
 export interface LlmSettings extends LlmModelSettings {
-  maxContext: number;
-  maxTokens: number;
-  temperature: number;
   models: LlmModelSettings[];
   scenarioModels: LlmScenarioModels;
 }
@@ -71,6 +76,7 @@ export interface ProjectRecord {
   infoPath: string | null;
   progressPath: string | null;
   userPreferencePath: string | null;
+  agentsPath: string | null;
   reviewStatus: string;
   lastReviewedAt: string | null;
   lastSessionAt: string | null;
@@ -104,6 +110,7 @@ export interface SessionRecord {
 export interface AppState {
   dataDir: string;
   llmSettings: LlmSettings;
+  llmProviderCalls: ProviderCallCount[];
   providerPresets: ProviderPreset[];
   sourceStatuses: SourceStatus[];
   stats: DashboardStats;

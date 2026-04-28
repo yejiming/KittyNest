@@ -11,7 +11,10 @@ pub fn import_historical_sessions(paths: &AppPaths) -> anyhow::Result<ImportSumm
     let connection = crate::db::open(paths)?;
     crate::db::migrate(&connection)?;
     let sessions = crate::db::unprocessed_sessions(&connection)?;
-    let settings = crate::config::read_llm_settings(paths)?;
+    let settings = crate::config::resolve_llm_settings(
+        &crate::config::read_llm_settings(paths)?,
+        crate::config::LlmScenario::Memory,
+    );
     let mut summary = ImportSummary::default();
 
     for session in sessions {
@@ -121,7 +124,7 @@ pub fn run_next_analysis_job(paths: &AppPaths) -> anyhow::Result<bool> {
             let memory_updated_at = crate::db::session_processed_at(&connection, session.id)?
                 .unwrap_or_else(crate::utils::now_rfc3339);
             match clear_session_memory_artifacts(paths, &connection, &session)
-                .and_then(|_| rebuild_session_memory(&settings, &session))
+                .and_then(|_| rebuild_session_memory(paths, &settings, &session))
                 .and_then(|memory| {
                     crate::memory::generate_session_memory_at(
                         paths,
@@ -244,21 +247,32 @@ pub fn run_next_analysis_job(paths: &AppPaths) -> anyhow::Result<bool> {
         let project_slug = project_slug.to_string();
         let review_paths = paths.clone();
         let progress_paths = paths.clone();
+        let preference_paths = paths.clone();
         let progress_settings = settings.clone();
+        let preference_settings = settings.clone();
         let review_slug = project_slug.clone();
         let progress_slug = project_slug.clone();
+        let preference_slug = project_slug.clone();
         let review_handle = std::thread::spawn(move || review_project(&review_paths, &review_slug));
         let progress_handle = std::thread::spawn(move || {
             write_progress(&progress_paths, &progress_settings, &progress_slug)
         });
+        let preference_handle = std::thread::spawn(move || {
+            write_user_preference(&preference_paths, &preference_settings, &preference_slug)
+        });
         let review_result = review_handle.join();
         let progress_result = progress_handle.join();
+        let preference_result = preference_handle.join();
         if review_result.is_err() {
             crate::db::fail_job(&connection, job.id, "Project summary worker panicked")?;
             return Ok(true);
         }
         if progress_result.is_err() {
             crate::db::fail_job(&connection, job.id, "Project progress worker panicked")?;
+            return Ok(true);
+        }
+        if preference_result.is_err() {
+            crate::db::fail_job(&connection, job.id, "User preference worker panicked")?;
             return Ok(true);
         }
         if !crate::db::job_is_active(&connection, job.id)? {
@@ -297,8 +311,24 @@ pub fn run_next_analysis_job(paths: &AppPaths) -> anyhow::Result<bool> {
             }
             Err(_) => {}
         }
+        match preference_result.expect("preference worker join checked") {
+            Ok(_) => {
+                completed += 1;
+                crate::db::update_job_progress(
+                    &connection,
+                    job.id,
+                    completed,
+                    failed,
+                    "User preference written",
+                )?;
+            }
+            Err(error) if failure.is_none() => {
+                failure = Some(format!("User preference failed: {error}"));
+            }
+            Err(_) => {}
+        }
         if failure.is_none() {
-            match write_user_preference(paths, &settings, &project_slug) {
+            match write_project_agents(paths, &settings, &project_slug) {
                 Ok(_) => {
                     completed += 1;
                     crate::db::update_job_progress(
@@ -306,11 +336,11 @@ pub fn run_next_analysis_job(paths: &AppPaths) -> anyhow::Result<bool> {
                         job.id,
                         completed,
                         failed,
-                        "User preference written",
+                        "AGENTS.md written",
                     )?;
                 }
                 Err(error) => {
-                    failure = Some(format!("User preference failed: {error}"));
+                    failure = Some(format!("AGENTS.md failed: {error}"));
                 }
             }
         }
@@ -348,7 +378,10 @@ pub fn run_next_analysis_job(paths: &AppPaths) -> anyhow::Result<bool> {
         return Ok(true);
     }
 
-    let settings = crate::config::read_llm_settings(paths)?;
+    let settings = crate::config::resolve_llm_settings(
+        &crate::config::read_llm_settings(paths)?,
+        crate::config::LlmScenario::Memory,
+    );
     let (completed, failed) = process_session_job(
         paths,
         job.id,
@@ -432,7 +465,7 @@ fn process_session_job(
                     let Some(session) = session else {
                         break;
                     };
-                    let analysis = analyze_session(&settings, &session);
+                    let analysis = analyze_session(&paths, &settings, &session);
                     let result = {
                         let Ok(_guard) = store_lock.lock() else {
                             break;
@@ -510,7 +543,12 @@ pub fn review_project(paths: &AppPaths, project_slug: &str) -> anyhow::Result<St
     let info_path = project_dir.join("summary.md");
     let code_context = code_context(&project.workdir)?;
     let settings = crate::config::read_llm_settings(paths)?;
-    let body = strip_llm_think_blocks(&remote_project_review(&settings, &project, &code_context)?);
+    let body = strip_llm_think_blocks(&remote_project_review(
+        paths,
+        &settings,
+        &project,
+        &code_context,
+    )?);
     let markdown = crate::markdown::render_frontmatter_markdown(
         &[
             ("project_name", project.slug.clone()),
@@ -583,7 +621,7 @@ pub fn rebuild_memories(paths: &AppPaths) -> anyhow::Result<usize> {
     let mut rebuilt = 0usize;
     for session in sessions {
         clear_session_memory_artifacts(paths, &connection, &session)?;
-        let memory = rebuild_session_memory(&settings, &session)?;
+        let memory = rebuild_session_memory(paths, &settings, &session)?;
         let memory_updated_at = crate::db::session_processed_at(&connection, session.id)?
             .unwrap_or_else(crate::utils::now_rfc3339);
         crate::memory::generate_session_memory_at(
@@ -630,9 +668,10 @@ fn generate_task_prompt(
     let project_progress = read_optional_markdown(project.progress_path.as_deref())?;
     let settings = crate::config::resolve_llm_settings(
         &crate::config::read_llm_settings(paths)?,
-        crate::config::LlmScenario::Task,
+        crate::config::LlmScenario::Assistant,
     );
-    let response = crate::llm::request_markdown(
+    let response = request_markdown_with_provider_count(
+        paths,
         &settings,
         "Rewrite the user's task prompt so it fits the real project. Return Markdown only with a concrete actionable prompt.",
         &format!(
@@ -691,17 +730,18 @@ fn analyze_and_store_session(
     settings: &crate::models::LlmSettings,
     session: &crate::models::StoredSession,
 ) -> anyhow::Result<(String, bool)> {
-    let analyzed = analyze_session(settings, session)?;
+    let analyzed = analyze_session(paths, settings, session)?;
     store_session_analysis(paths, connection, session, analyzed)
 }
 
 fn analyze_session(
+    paths: &AppPaths,
     settings: &crate::models::LlmSettings,
     session: &crate::models::StoredSession,
 ) -> anyhow::Result<SessionAnalysis> {
     let settings =
         crate::config::resolve_llm_settings(settings, crate::config::LlmScenario::Session);
-    remote_session_analysis(&settings, session)
+    remote_session_analysis(paths, &settings, session)
 }
 
 fn store_session_analysis(
@@ -765,6 +805,7 @@ fn write_progress(
         crate::db::PROJECT_ANALYZE_SESSION_LIMIT,
     )?;
     let body = strip_llm_think_blocks(&remote_project_progress(
+        paths,
         settings,
         project_slug,
         &summaries,
@@ -796,6 +837,7 @@ fn write_user_preference(
         crate::db::PROJECT_ANALYZE_SESSION_LIMIT,
     )?;
     let body = strip_llm_think_blocks(&remote_project_user_preference(
+        paths,
         settings,
         project_slug,
         &sessions,
@@ -815,7 +857,36 @@ fn write_user_preference(
     )
 }
 
+fn write_project_agents(
+    paths: &AppPaths,
+    settings: &crate::models::LlmSettings,
+    project_slug: &str,
+) -> anyhow::Result<()> {
+    let connection = crate::db::open(paths)?;
+    crate::db::migrate(&connection)?;
+    let project_dir = paths.projects_dir.join(project_slug);
+    std::fs::create_dir_all(&project_dir)?;
+    let agents_path = project_dir.join("AGENTS.md");
+    let summary_path = project_dir.join("summary.md");
+    let progress_path = project_dir.join("progress.md");
+    let user_preference_path = project_dir.join("user_preference.md");
+    let summary = read_optional_markdown(Some(&summary_path.to_string_lossy()))?;
+    let progress = read_optional_markdown(Some(&progress_path.to_string_lossy()))?;
+    let user_preference = read_optional_markdown(Some(&user_preference_path.to_string_lossy()))?;
+    let body = strip_llm_think_blocks(&remote_project_agents(
+        paths,
+        settings,
+        project_slug,
+        &summary,
+        &progress,
+        &user_preference,
+    )?);
+    std::fs::write(&agents_path, format!("{}\n", body.trim()))?;
+    crate::db::update_project_agents(&connection, project_slug, &agents_path.to_string_lossy())
+}
+
 fn remote_session_analysis(
+    paths: &AppPaths,
     settings: &crate::models::LlmSettings,
     session: &crate::models::StoredSession,
 ) -> anyhow::Result<SessionAnalysis> {
@@ -831,7 +902,7 @@ fn remote_session_analysis(
             ),
             None => base_prompt.clone(),
         };
-        match crate::llm::request_json(settings, system_prompt, &user_prompt)
+        match request_json_with_provider_count(paths, settings, system_prompt, &user_prompt)
             .and_then(|response| session_analysis_from_json(&response.content))
         {
             Ok(analysis) => return Ok(analysis),
@@ -844,6 +915,7 @@ fn remote_session_analysis(
 }
 
 fn rebuild_session_memory(
+    paths: &AppPaths,
     settings: &crate::models::LlmSettings,
     session: &crate::models::StoredSession,
 ) -> anyhow::Result<crate::memory::SessionMemoryDraft> {
@@ -861,7 +933,7 @@ fn rebuild_session_memory(
             ),
             None => base_prompt.clone(),
         };
-        match crate::llm::request_json(&settings, system_prompt, &user_prompt)
+        match request_json_with_provider_count(paths, &settings, system_prompt, &user_prompt)
             .and_then(|response| crate::memory::session_memory_from_json(&response.content))
         {
             Ok(memory) => return Ok(memory),
@@ -883,45 +955,53 @@ fn disambiguate_memory_entities(
     }
     let settings =
         crate::config::resolve_llm_settings(settings, crate::config::LlmScenario::Memory);
-    let result = remote_entity_alias_groups(&settings, &entities)
-        .and_then(|groups| crate::graph::write_entity_aliases(paths, &groups));
+    let mut seen_entity_names = std::collections::BTreeSet::new();
+    let entity_names = entities
+        .iter()
+        .filter_map(|entity| {
+            if seen_entity_names.insert(entity.name.clone()) {
+                Some(entity.name.as_str())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    let entity_names_json = serde_json::to_string(&entity_names)?;
+    let system_prompt = "Return only JSON with groups. Merge synonymous entities. groups must be an array of {canonical_id, canonical_name, aliases}. canonical_id must be unique. canonical_name must be unique and human-facing. aliases must include every synonym string from the supplied entities that belongs to the group. Example response: {\"groups\":[{\"canonical_id\":\"sqlite\",\"canonical_name\":\"SQLite\",\"aliases\":[\"sqlite\",\"SQLite DB\",\"SQLite database\"]},{\"canonical_id\":\"react\",\"canonical_name\":\"React\",\"aliases\":[\"react\",\"React.js\"]}]}";
+    let user_prompt = format!("Existing entity names:\n{entity_names_json}");
+    let result =
+        remote_entity_alias_groups(paths, &settings, &entities, system_prompt, &user_prompt)
+            .and_then(|groups| crate::graph::write_entity_aliases(paths, &groups));
     if let Err(error) = &result {
         append_error_log(
             paths,
             "Entity disambiguation failed",
-            &format_entity_disambiguation_error(error, &entities),
+            &format_entity_disambiguation_error(error, entities.len(), system_prompt, &user_prompt),
         );
     }
     result
 }
 
 fn remote_entity_alias_groups(
+    paths: &AppPaths,
     settings: &crate::models::LlmSettings,
     entities: &[crate::graph::EntityForDisambiguation],
+    system_prompt: &str,
+    user_prompt: &str,
 ) -> anyhow::Result<Vec<crate::graph::EntityAliasGroup>> {
-    let entity_names = entities
-        .iter()
-        .map(|entity| entity.name.as_str())
-        .collect::<Vec<_>>();
-    let entity_names_json = serde_json::to_string_pretty(&entity_names)?;
-    let response = crate::llm::request_json(
-        settings,
-        "Return only JSON with groups. Merge synonymous entities. groups must be an array of {canonical_id, canonical_name, aliases}. canonical_id must be unique. canonical_name must be unique and human-facing. aliases must include every synonym string from the supplied entities that belongs to the group. Example response: {\"groups\":[{\"canonical_id\":\"sqlite\",\"canonical_name\":\"SQLite\",\"aliases\":[\"sqlite\",\"SQLite DB\",\"SQLite database\"]},{\"canonical_id\":\"react\",\"canonical_name\":\"React\",\"aliases\":[\"react\",\"React.js\"]}]}",
-        &format!("Existing entity names:\n{entity_names_json}"),
-    )?;
+    let response = request_json_with_provider_count(paths, settings, system_prompt, user_prompt)?;
     entity_alias_groups_from_json(&response.content, entities)
-        .map_err(|error| anyhow::anyhow!("{error}; raw_entity_alias_response={}", response.content))
+        .map_err(|error| anyhow::anyhow!("{error}; raw_llm_response={}", response.content))
 }
 
 fn format_entity_disambiguation_error(
     error: &anyhow::Error,
-    entities: &[crate::graph::EntityForDisambiguation],
+    entity_count: usize,
+    system_prompt: &str,
+    user_prompt: &str,
 ) -> String {
-    let entities_json =
-        serde_json::to_string_pretty(entities).unwrap_or_else(|_| "<entities json failed>".into());
     format!(
-        "stage: entity_disambiguation\nerror: {error:#}\nentity_count: {}\nentity_disambiguation_input_json:\n{entities_json}",
-        entities.len()
+        "stage: entity_disambiguation\nerror: {error:#}\nentity_count: {entity_count}\nentity_disambiguation_system_prompt:\n{system_prompt}\nentity_disambiguation_user_prompt:\n{user_prompt}",
     )
 }
 
@@ -1003,8 +1083,11 @@ fn run_memory_search_job(
 ) -> anyhow::Result<usize> {
     let search = crate::db::memory_search_for_job(connection, job_id)?
         .ok_or_else(|| anyhow::anyhow!("memory search row not found for job {job_id}"))?;
-    let settings = crate::config::read_llm_settings(paths)?;
-    let entities = memory_search_entities(&settings, &search.query)?;
+    let settings = crate::config::resolve_llm_settings(
+        &crate::config::read_llm_settings(paths)?,
+        crate::config::LlmScenario::Memory,
+    );
+    let entities = memory_search_entities(paths, &settings, &search.query)?;
     let mut session_ids = std::collections::BTreeSet::new();
     for entity in &entities {
         for related in crate::graph::related_sessions_for_entity(paths, entity)? {
@@ -1047,10 +1130,26 @@ fn run_memory_search_job(
 }
 
 fn memory_search_entities(
+    paths: &AppPaths,
     settings: &crate::models::LlmSettings,
     query: &str,
 ) -> anyhow::Result<Vec<String>> {
-    let mut entities = extract_memory_search_entities(settings, query)?;
+    let graph_entities = crate::graph::entity_session_counts(paths)?
+        .into_iter()
+        .map(|entity| entity.entity)
+        .collect::<Vec<_>>();
+    let mut entities = match extract_memory_search_entities(paths, settings, query, &graph_entities)
+    {
+        Ok(entities) => entities,
+        Err(error) => {
+            append_error_log(
+                paths,
+                "Memory search entity extraction failed",
+                &format_memory_search_entity_extraction_error(&error, query, &graph_entities),
+            );
+            return Err(error);
+        }
+    };
     let literal = query.trim();
     if !literal.is_empty() {
         entities.push(literal.to_string());
@@ -1062,15 +1161,39 @@ fn memory_search_entities(
         .collect())
 }
 
+fn format_memory_search_entity_extraction_error(
+    error: &anyhow::Error,
+    query: &str,
+    graph_entities: &[String],
+) -> String {
+    let graph_entities_json = serde_json::to_string_pretty(graph_entities)
+        .unwrap_or_else(|_| "<graph entities json failed>".into());
+    format!(
+        "stage: memory_search_entity_extraction\nerror: {error:#}\nquery: {query}\ngraph_entity_count: {}\ngraph_entities_json:\n{graph_entities_json}",
+        graph_entities.len()
+    )
+}
+
 fn extract_memory_search_entities(
+    paths: &AppPaths,
     settings: &crate::models::LlmSettings,
     query: &str,
+    graph_entities: &[String],
 ) -> anyhow::Result<Vec<String>> {
-    let response = crate::llm::request_json(
+    if graph_entities.is_empty() {
+        return Ok(Vec::new());
+    }
+    let graph_entities_json = serde_json::to_string(graph_entities)?;
+    let response = request_json_with_provider_count(
+        paths,
         settings,
-        "Return only JSON with entities. entities must be an array of entity strings extracted from the user's memory search query.",
-        query,
+        "Return only JSON with entities. Select only entity strings from the supplied Graph entities list that appear in or are clearly referred to by the user query. Do not invent variants, compound phrases, or entities that are absent from Graph entities.",
+        &format!("Graph entities: {graph_entities_json}\nUser query: {query}"),
     )?;
+    let graph_entity_by_lower = graph_entities
+        .iter()
+        .map(|entity| (entity.to_lowercase(), entity.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
     let values = response
         .content
         .get("entities")
@@ -1088,6 +1211,7 @@ fn extract_memory_search_entities(
                 .map(|entity| entity.trim().to_string())
         })
         .filter(|entity| !entity.is_empty())
+        .filter_map(|entity| graph_entity_by_lower.get(&entity.to_lowercase()).cloned())
         .collect())
 }
 
@@ -1096,6 +1220,16 @@ fn session_transcript(session: &crate::models::StoredSession) -> String {
         .messages
         .iter()
         .filter(|message| matches!(message.role.as_str(), "user" | "assistant"))
+        .map(|message| format!("{}: {}", message.role, message.content))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn session_user_transcript(session: &crate::models::StoredSession) -> String {
+    session
+        .messages
+        .iter()
+        .filter(|message| message.role == "user")
         .map(|message| format!("{}: {}", message.role, message.content))
         .collect::<Vec<_>>()
         .join("\n\n")
@@ -1119,6 +1253,7 @@ fn required_json_string(value: &serde_json::Value, key: &str) -> anyhow::Result<
 }
 
 fn remote_project_review(
+    paths: &AppPaths,
     settings: &crate::models::LlmSettings,
     project: &crate::models::ProjectRecord,
     code_context: &CodeContext,
@@ -1131,7 +1266,8 @@ fn remote_project_review(
         .map(|file| format!("### {}\n```text\n{}\n```", file.path, file.content))
         .collect::<Vec<_>>()
         .join("\n\n");
-    let response = crate::llm::request_markdown(
+    let response = request_markdown_with_provider_count(
+        paths,
         &settings,
         "Review the project from the supplied file index and file excerpts. Return Markdown only. Use exactly these five second-level sections: ## Summary, ## Tech Stack, ## Architecture, ## Code Quality, ## Risks. Do not return JSON.",
         &format!(
@@ -1150,6 +1286,7 @@ fn remote_project_review(
 }
 
 fn remote_project_progress(
+    paths: &AppPaths,
     settings: &crate::models::LlmSettings,
     project_slug: &str,
     summaries: &[crate::models::ProjectSessionSummary],
@@ -1175,15 +1312,17 @@ fn remote_project_progress(
             .collect::<Vec<_>>()
             .join("\n\n")
     };
-    let narrative = crate::llm::request_markdown(
+    let narrative = request_markdown_with_provider_count(
+        paths,
         &settings,
-        "Aggregate all analyzed session summaries into narrative Project Progress. Sessions are already ordered chronologically. Use the majority language of the project's sessions. Return Markdown only.",
+        "Aggregate all analyzed session summaries into narrative Project Progress. Keep the answer concise and clear. Sessions are already ordered chronologically. Use the majority language of the project's sessions. Return Markdown only.",
         &format!("Project: {project_slug}\n\nChronological session summaries:\n\n{timeline}"),
     )?;
     Ok(strip_llm_think_blocks(&narrative.content))
 }
 
 fn remote_project_user_preference(
+    paths: &AppPaths,
     settings: &crate::models::LlmSettings,
     project_slug: &str,
     sessions: &[crate::models::StoredSession],
@@ -1201,18 +1340,122 @@ fn remote_project_user_preference(
                     session.created_at,
                     session.session_id,
                     session.session_id,
-                    session_transcript(session)
+                    session_user_transcript(session)
                 )
             })
             .collect::<Vec<_>>()
             .join("\n\n")
     };
-    let response = crate::llm::request_markdown(
+    let response = request_markdown_with_provider_count(
+        paths,
         &settings,
-        "Summarize durable user preferences from all supplied user and assistant messages. Focus on preferences, working style, constraints, recurring goals, and communication style. Use the majority language of the project's sessions. Return Markdown only.",
-        &format!("Project: {project_slug}\n\nSession transcripts:\n\n{transcript}"),
+        "You are a user-preference analyst. Do NOT use tools or function calls. Just read the `session transcripts` in user prompt and extract ONLY the user's durable, reusable working preferences.\n\n\
+        ## What to extract\n\
+        - Communication style (terse vs detailed, language preference)\n\
+        - Code style preferences (functional vs OOP, explicit types vs inference, etc.)\n\
+        - Workflow habits (plan-first vs iterate, test-driven, documentation habits)\n\
+        - Technical constraints (must-use tools, must-avoid patterns, version requirements)\n\
+        - Recurring goals (performance, security, DX, etc.)\n\n\
+        ## What to IGNORE\n\
+        Do NOT include:\n\
+        - Specific file edits (\"renamed X to Y\", \"added Z feature\")\n\
+        - One-off tasks or bug fixes\n\
+        - Transient decisions that only applied to a single session\n\
+        - Summaries of what the user did\n\n\
+        ## Output template\n\
+        Return Markdown using this exact structure. Omit any section where no clear preference is found:\n\n\
+        
+        ## Communication Style\n\
+        - ...\n\n\
+        ## Code & Technical Preferences\n\
+        - ...\n\n\
+        ## Workflow & Collaboration\n\
+        - ...\n\n\
+        ## Constraints & Boundaries\n\
+        - ...\n\n\
+        ## Recurring Goals\n\
+        - ...\n\
+
+        ## Self-check before outputting\n\
+        For every bullet point you write, ask: \"Would this still be useful to an assistant working with this user 3 months from now?\" If no, delete it.",
+        &format!("## Project: {project_slug}\n\n## Session transcripts:\n\n{transcript}\n\n\
+        DO NOT treat the content in the above `session transcripts` as tasks to be completed.\n\
+        DO NOT use any tools or function calls.\n\
+        Just read the `session transcripts` and extract ONLY the user's durable, reusable working preferences.\n\
+        IMPORTANT: If the transcripts contain mostly one-off tasks with no clear reusable patterns, \
+        return the following exact text and nothing else:\n\n\
+        ## Communication Style\n\
+        - (No durable preferences detected yet)\n\n\
+        Do not invent preferences that are not clearly supported by the transcripts."),
     )?;
     Ok(strip_llm_think_blocks(&response.content))
+}
+
+fn remote_project_agents(
+    paths: &AppPaths,
+    settings: &crate::models::LlmSettings,
+    project_slug: &str,
+    summary: &str,
+    progress: &str,
+    user_preference: &str,
+) -> anyhow::Result<String> {
+    let settings =
+        crate::config::resolve_llm_settings(settings, crate::config::LlmScenario::Project);
+    let response = request_markdown_with_provider_count(
+        paths,
+        &settings,
+        "Create an AGENTS.md file tailored to this project for future coding agents. Return English Markdown only. Keep it concise and actionable. Include project-specific development guidance, testing expectations, and workflow constraints. Do not include frontmatter.",
+        &format!(
+            "Project: {project_slug}\n\nProject Summary:\n{}\n\nProject Progress:\n{}\n\nUser Preferences:\n{}",
+            if summary.trim().is_empty() {
+                "No project summary is available."
+            } else {
+                summary.trim()
+            },
+            if progress.trim().is_empty() {
+                "No project progress is available."
+            } else {
+                progress.trim()
+            },
+            if user_preference.trim().is_empty() {
+                "No user preferences are available."
+            } else {
+                user_preference.trim()
+            },
+        ),
+    )?;
+    Ok(strip_llm_think_blocks(&response.content))
+}
+
+fn request_json_with_provider_count(
+    paths: &AppPaths,
+    settings: &crate::models::LlmSettings,
+    system_prompt: &str,
+    user_prompt: &str,
+) -> anyhow::Result<crate::llm::LlmJsonResponse> {
+    let response = crate::llm::request_json(settings, system_prompt, user_prompt)?;
+    record_llm_provider_call(paths, &settings.provider);
+    Ok(response)
+}
+
+fn request_markdown_with_provider_count(
+    paths: &AppPaths,
+    settings: &crate::models::LlmSettings,
+    system_prompt: &str,
+    user_prompt: &str,
+) -> anyhow::Result<crate::llm::LlmTextResponse> {
+    let response = crate::llm::request_markdown(settings, system_prompt, user_prompt)?;
+    record_llm_provider_call(paths, &settings.provider);
+    Ok(response)
+}
+
+fn record_llm_provider_call(paths: &AppPaths, provider: &str) {
+    let Ok(connection) = crate::db::open(paths) else {
+        return;
+    };
+    if crate::db::migrate(&connection).is_ok() {
+        let _ = crate::db::record_llm_provider_call(&connection, provider);
+    }
 }
 
 fn strip_llm_think_blocks(markdown: &str) -> String {
@@ -1366,9 +1609,9 @@ fn is_source_excerpt_candidate(path: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        analyze_session, create_manual_task, import_historical_sessions, rebuild_memories,
-        review_project, run_next_analysis_job, session_worker_count, store_session_analysis,
-        write_progress, SessionAnalysis,
+        analyze_session, create_manual_task, import_historical_sessions, memory_search_entities,
+        rebuild_memories, review_project, run_next_analysis_job, session_worker_count,
+        store_session_analysis, write_progress, SessionAnalysis,
     };
     use crate::{
         db::{migrate, open, upsert_raw_sessions},
@@ -1590,10 +1833,12 @@ mod tests {
             serde_json::json!({"task_name": "still-missing", "title": "Still Missing"}),
             session_response("fixed-json", "Fixed Json", "Valid on third attempt."),
         ]);
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
         let settings = empty_settings();
         let session = stored_test_session("retry-json");
 
-        let analysis = analyze_session(&settings, &session).unwrap();
+        let analysis = analyze_session(&paths, &settings, &session).unwrap();
         let requests = crate::llm::test_support::take_requests();
 
         assert_eq!(analysis.session_title, "Fixed Json");
@@ -1615,10 +1860,12 @@ mod tests {
             "memories": ["Session fields can drive memory."],
             "entities": [{"name": "KittyNest", "type": "project"}]
         })]);
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
         let settings = empty_settings();
         let session = stored_test_session("session-only-json");
 
-        let analysis = analyze_session(&settings, &session).unwrap();
+        let analysis = analyze_session(&paths, &settings, &session).unwrap();
         let requests = crate::llm::test_support::take_requests();
 
         assert_eq!(analysis.session_title, "Focused Session");
@@ -1924,10 +2171,15 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
         seed_rebuildable_session(&paths, "sqlite-session", "MemoryProject");
+        seed_rebuildable_session(&paths, "sqlite-duplicate-session", "MemoryProject");
         seed_rebuildable_session(&paths, "sqlite-db-session", "MemoryProject");
         crate::llm::test_support::set_json_responses(vec![
             serde_json::json!({
                 "memories": ["SQLite stores local memory."],
+                "entities": [{"name": "sqlite", "type": "technology"}]
+            }),
+            serde_json::json!({
+                "memories": ["SQLite also stores local memory."],
                 "entities": [{"name": "sqlite", "type": "technology"}]
             }),
             serde_json::json!({
@@ -1954,22 +2206,23 @@ mod tests {
         let entities = crate::graph::entity_session_counts(&paths).unwrap();
         let related = crate::graph::related_sessions_for_session(&paths, "sqlite-session").unwrap();
 
-        assert_eq!(requests.len(), 3);
-        assert!(requests[2].system_prompt.contains("canonical_id"));
-        assert!(requests[2].system_prompt.contains("Example response"));
-        assert!(requests[2].system_prompt.contains("SQLite database"));
-        assert!(requests[2]
+        assert_eq!(requests.len(), 4);
+        assert!(requests[3].system_prompt.contains("canonical_id"));
+        assert!(requests[3].system_prompt.contains("Example response"));
+        assert!(requests[3].system_prompt.contains("SQLite database"));
+        assert!(requests[3]
             .user_prompt
-            .starts_with("Existing entity names:\n["));
-        assert!(requests[2].user_prompt.contains("\"sqlite\""));
-        assert!(requests[2].user_prompt.contains("\"sqlite db\""));
-        assert!(!requests[2].user_prompt.contains("sourceSession"));
-        assert!(!requests[2].user_prompt.contains("entityType"));
-        assert!(!requests[2].user_prompt.contains("sourceProject"));
-        assert!(!requests[2].user_prompt.contains("\"id\""));
+            .starts_with("Existing entity names:\n[\""));
+        assert!(!requests[3].user_prompt.contains("\n  \""));
+        assert_eq!(requests[3].user_prompt.matches("\"sqlite\"").count(), 1);
+        assert!(requests[3].user_prompt.contains("\"sqlite db\""));
+        assert!(!requests[3].user_prompt.contains("sourceSession"));
+        assert!(!requests[3].user_prompt.contains("entityType"));
+        assert!(!requests[3].user_prompt.contains("sourceProject"));
+        assert!(!requests[3].user_prompt.contains("\"id\""));
         assert_eq!(entities.len(), 1);
         assert_eq!(entities[0].entity, "SQLite");
-        assert_eq!(entities[0].session_count, 2);
+        assert_eq!(entities[0].session_count, 3);
         assert_eq!(related[0].shared_entities, vec!["SQLite".to_string()]);
     }
 
@@ -2091,10 +2344,17 @@ mod tests {
 
         assert!(log.contains("Entity disambiguation failed"));
         assert!(log.contains("stage: entity_disambiguation"));
-        assert!(log.contains("entity_disambiguation_input_json:"));
+        assert!(log.contains("entity_disambiguation_system_prompt:"));
+        assert!(log.contains("entity_disambiguation_user_prompt:"));
         assert!(log.contains("LLM JSON missing required array field `groups`"));
+        assert!(log.contains("raw_llm_response={\"unexpected\":[]}"));
         assert!(log.contains("\"unexpected\""));
-        assert!(log.contains("\"name\": \"sqlite\""));
+        assert!(log.contains("Existing entity names:"));
+        assert!(log.contains("\"sqlite\""));
+        assert!(!log.contains("\n  \"sqlite\""));
+        assert!(!log.contains("entity_disambiguation_input_json:"));
+        assert!(!log.contains("raw_entity_alias_response="));
+        assert!(!log.contains("\"name\": \"sqlite\""));
     }
 
     #[test]
@@ -2135,6 +2395,149 @@ mod tests {
             latest.results[0].memory,
             "SQLite is used for local graph memory."
         );
+    }
+
+    #[test]
+    fn memory_search_entity_extraction_uses_memory_model() {
+        let _mock_guard = crate::llm::test_support::guard();
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
+        let session = seed_analyzed_session(&paths, "memory-model-search", "MemoryProject");
+        let mut settings = crate::config::default_llm_settings();
+        settings.model = "default-model".into();
+        settings.api_key = "default-key".into();
+        settings.models = vec![
+            crate::models::LlmModelSettings {
+                id: "default-model-id".into(),
+                provider: "DefaultProvider".into(),
+                remark: "Default".into(),
+                base_url: "https://default.example/v1".into(),
+                interface: "openai".into(),
+                model: "default-model".into(),
+                api_key: "default-key".into(),
+                max_context: 128_000,
+                max_tokens: 4_096,
+                temperature: 0.2,
+            },
+            crate::models::LlmModelSettings {
+                id: "memory-model-id".into(),
+                provider: "MemoryProvider".into(),
+                remark: "Memory".into(),
+                base_url: "https://memory.example/v1".into(),
+                interface: "openai".into(),
+                model: "memory-model".into(),
+                api_key: "memory-key".into(),
+                max_context: 128_000,
+                max_tokens: 4_096,
+                temperature: 0.2,
+            },
+        ];
+        settings.scenario_models.default_model = "default-model-id".into();
+        settings.scenario_models.memory_model = "memory-model-id".into();
+        crate::config::write_llm_settings(&paths, &settings).unwrap();
+
+        let connection = crate::db::open(&paths).unwrap();
+        crate::db::migrate(&connection).unwrap();
+        crate::db::replace_session_memories(
+            &connection,
+            &session,
+            &["SQLite is used for local graph memory.".to_string()],
+        )
+        .unwrap();
+        crate::graph::write_session_graph(
+            &paths,
+            &session,
+            &[crate::memory::MemoryEntity {
+                name: "SQLite".into(),
+                entity_type: "technology".into(),
+            }],
+        )
+        .unwrap();
+        crate::llm::test_support::set_json_responses(vec![serde_json::json!({
+            "entities": ["SQLite"]
+        })]);
+        crate::db::enqueue_search_memories(&connection, "Where is sqlite used?").unwrap();
+
+        assert!(run_next_analysis_job(&paths).unwrap());
+
+        let requests = crate::llm::test_support::take_requests();
+        assert_eq!(requests[0].model, "memory-model");
+        assert!(requests[0].user_prompt.contains("Graph entities"));
+        assert!(requests[0].user_prompt.contains("\"sqlite\""));
+        assert!(requests[0].user_prompt.contains("User query"));
+        assert!(requests[0].user_prompt.contains("Where is sqlite used?"));
+    }
+
+    #[test]
+    fn memory_search_entity_extraction_filters_entities_absent_from_graph() {
+        let _mock_guard = crate::llm::test_support::guard();
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
+        let session = seed_analyzed_session(&paths, "memory-filter-search", "MemoryProject");
+        crate::graph::write_session_graph(
+            &paths,
+            &session,
+            &[crate::memory::MemoryEntity {
+                name: "KittyCopilot".into(),
+                entity_type: "project".into(),
+            }],
+        )
+        .unwrap();
+        crate::llm::test_support::set_json_responses(vec![serde_json::json!({
+            "entities": ["kittycopilot项目", "kittycopilot"]
+        })]);
+
+        let entities = memory_search_entities(
+            &paths,
+            &crate::config::default_llm_settings(),
+            "kittycopilot项目是做什么的",
+        )
+        .unwrap();
+
+        assert!(entities.contains(&"kittycopilot".to_string()));
+        assert!(!entities.contains(&"kittycopilot项目".to_string()));
+    }
+
+    #[test]
+    fn memory_search_entity_extraction_failures_write_error_log() {
+        let _mock_guard = crate::llm::test_support::guard();
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
+        let session = seed_analyzed_session(&paths, "memory-error-search", "MemoryProject");
+        crate::graph::write_session_graph(
+            &paths,
+            &session,
+            &[crate::memory::MemoryEntity {
+                name: "KittyCopilot".into(),
+                entity_type: "project".into(),
+            }],
+        )
+        .unwrap();
+        crate::llm::test_support::set_json_responses(vec![serde_json::json!({
+            "not_entities": ["kittycopilot"]
+        })]);
+
+        let error = memory_search_entities(
+            &paths,
+            &crate::config::default_llm_settings(),
+            "kittycopilot项目是做什么的",
+        )
+        .unwrap_err()
+        .to_string();
+        let log_path = std::fs::read_dir(paths.data_dir.join("logs"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let log = std::fs::read_to_string(log_path).unwrap();
+
+        assert!(error.contains("entities"));
+        assert!(log.contains("Memory search entity extraction failed"));
+        assert!(log.contains("stage: memory_search_entity_extraction"));
+        assert!(log.contains("query: kittycopilot项目是做什么的"));
+        assert!(log.contains("\"kittycopilot\""));
+        assert!(log.contains("LLM JSON missing required array field `entities`"));
     }
 
     #[test]
@@ -2479,6 +2882,7 @@ mod tests {
             "## summary\n\nProject analyzed.\n\n## tech_stack\n\nRust.\n\n## architecture\n\nTauri.\n\n## code_quality\n\nFocused.\n\n## risks\n\nNone.",
             "# Progress\n\nCurrent project progress.",
             "# User Preference\n\nPrefers concise implementation notes.",
+            "# AGENTS.md\n\nAlways run focused tests before changing code.",
         ]);
 
         let enqueued = crate::db::enqueue_analyze_project(&connection, &project.slug).unwrap();
@@ -2502,7 +2906,7 @@ mod tests {
             .filter(|request| request.kind == "markdown")
             .collect::<Vec<_>>();
 
-        assert_eq!(enqueued.total, 23);
+        assert_eq!(enqueued.total, 24);
         assert_eq!(analyzed_count, 20);
         assert!(oldest.iter().all(|session| session.status == "pending"));
         assert_eq!(reviewed.review_status, "reviewed");
@@ -2518,14 +2922,25 @@ mod tests {
             .user_preference_path
             .as_deref()
             .is_some_and(|path| path.ends_with("/user_preference.md")));
+        assert!(reviewed
+            .agents_path
+            .as_deref()
+            .is_some_and(|path| path.ends_with("/AGENTS.md")));
         assert!(
             std::fs::read_to_string(reviewed.user_preference_path.unwrap())
                 .unwrap()
                 .contains("Prefers concise implementation notes.")
         );
+        assert!(std::fs::read_to_string(reviewed.agents_path.unwrap())
+            .unwrap()
+            .contains("Always run focused tests before changing code."));
         let preference_request = markdown_requests
             .iter()
             .find(|request| request.system_prompt.contains("durable user preferences"))
+            .unwrap();
+        let agents_request = markdown_requests
+            .iter()
+            .find(|request| request.system_prompt.contains("Create an AGENTS.md file"))
             .unwrap();
         let progress_request = markdown_requests
             .iter()
@@ -2545,6 +2960,15 @@ mod tests {
         assert!(preference_request
             .user_prompt
             .contains("Analyze session 22"));
+        assert!(preference_request
+            .system_prompt
+            .contains("Do not reproduce or summarize AGENTS.md instructions"));
+        assert!(agents_request.user_prompt.contains("Project Summary"));
+        assert!(agents_request.user_prompt.contains("Project Progress"));
+        assert!(agents_request.user_prompt.contains("User Preferences"));
+        assert!(agents_request
+            .system_prompt
+            .contains("Return English Markdown only"));
     }
 
     #[test]
@@ -3035,7 +3459,9 @@ mod tests {
             ],
         };
 
-        let analysis = analyze_session(&settings, &session).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
+        let analysis = analyze_session(&paths, &settings, &session).unwrap();
         let requests = crate::llm::test_support::take_requests();
 
         assert_eq!(analysis.session_summary, "用户要求保持中文。");

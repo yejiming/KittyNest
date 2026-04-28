@@ -34,7 +34,7 @@ pub fn request_json(
 ) -> anyhow::Result<LlmJsonResponse> {
     let _permit = acquire_llm_permit();
     #[cfg(test)]
-    if let Some(response) = test_support::next_json_response(system_prompt, user_prompt) {
+    if let Some(response) = test_support::next_json_response(settings, system_prompt, user_prompt) {
         return Ok(response);
     }
     if !configured_for_remote(settings) {
@@ -53,7 +53,9 @@ pub fn request_markdown(
 ) -> anyhow::Result<LlmTextResponse> {
     let _permit = acquire_llm_permit();
     #[cfg(test)]
-    if let Some(response) = test_support::next_markdown_response(system_prompt, user_prompt) {
+    if let Some(response) =
+        test_support::next_markdown_response(settings, system_prompt, user_prompt)
+    {
         return Ok(response);
     }
     if !configured_for_remote(settings) {
@@ -108,13 +110,15 @@ fn openai_chat_body(
     json_response: bool,
 ) -> serde_json::Value {
     let (system_prompt, user_prompt) = limited_prompts(settings, system_prompt, user_prompt);
+    let max_tokens = effective_max_tokens(settings);
     let mut body = serde_json::json!({
         "model": settings.model.clone(),
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        "max_tokens": effective_max_tokens(settings),
+        "max_tokens": max_tokens,
+        "max_completion_tokens": max_tokens,
         "temperature": effective_temperature(settings)
     });
     if json_response {
@@ -161,7 +165,11 @@ fn limited_prompts(
     system_prompt: &str,
     user_prompt: &str,
 ) -> (String, String) {
-    let Some(limit) = settings.max_context.checked_mul(4).filter(|limit| *limit > 0) else {
+    let Some(limit) = settings
+        .max_context
+        .checked_mul(4)
+        .filter(|limit| *limit > 0)
+    else {
         return (system_prompt.to_string(), user_prompt.to_string());
     };
     let system_len = system_prompt.chars().count();
@@ -169,7 +177,10 @@ fn limited_prompts(
         return (tail_chars(system_prompt, limit), String::new());
     }
     let user_limit = limit - system_len;
-    (system_prompt.to_string(), tail_chars(user_prompt, user_limit))
+    (
+        system_prompt.to_string(),
+        tail_chars(user_prompt, user_limit),
+    )
 }
 
 fn tail_chars(value: &str, limit: usize) -> String {
@@ -191,9 +202,13 @@ fn request_openai_json(
     let content = response
         .pointer("/choices/0/message/content")
         .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("OpenAI-compatible response missing content"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "OpenAI-compatible response missing content\nraw_llm_response_json:\n{response}"
+            )
+        })?;
     Ok(LlmJsonResponse {
-        content: parse_json_content(content)?,
+        content: parse_json_content_with_provider_response(content, &response)?,
         used_provider: settings.provider.clone(),
     })
 }
@@ -232,9 +247,13 @@ fn request_anthropic_json(
                 .iter()
                 .find_map(|item| item.get("text").and_then(serde_json::Value::as_str))
         })
-        .ok_or_else(|| anyhow::anyhow!("Anthropic-compatible response missing text content"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Anthropic-compatible response missing text content\nraw_llm_response_json:\n{response}"
+            )
+        })?;
     Ok(LlmJsonResponse {
-        content: parse_json_content(content)?,
+        content: parse_json_content_with_provider_response(content, &response)?,
         used_provider: settings.provider.clone(),
     })
 }
@@ -368,13 +387,27 @@ fn parse_json_content(content: &str) -> anyhow::Result<serde_json::Value> {
     if let Ok(value) = serde_json::from_str(content) {
         return Ok(value);
     }
-    let start = content
-        .find('{')
-        .ok_or_else(|| anyhow::anyhow!("LLM response did not contain JSON object"))?;
-    let end = content
-        .rfind('}')
-        .ok_or_else(|| anyhow::anyhow!("LLM response did not contain complete JSON object"))?;
-    Ok(serde_json::from_str(&content[start..=end])?)
+    let start = content.find('{').ok_or_else(|| {
+        raw_llm_response_error("LLM response did not contain JSON object", content)
+    })?;
+    let end = content.rfind('}').ok_or_else(|| {
+        raw_llm_response_error("LLM response did not contain complete JSON object", content)
+    })?;
+    serde_json::from_str(&content[start..=end]).map_err(|error| {
+        anyhow::anyhow!("LLM response JSON parse failed: {error}\nraw_llm_response:\n{content}")
+    })
+}
+
+fn raw_llm_response_error(message: &str, content: &str) -> anyhow::Error {
+    anyhow::anyhow!("{message}\nraw_llm_response:\n{content}")
+}
+
+fn parse_json_content_with_provider_response(
+    content: &str,
+    provider_response: &serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    parse_json_content(content)
+        .map_err(|error| anyhow::anyhow!("{error:#}\nraw_llm_response_json:\n{provider_response}"))
 }
 
 #[cfg(test)]
@@ -384,11 +417,13 @@ pub mod test_support {
         sync::{Mutex, MutexGuard, OnceLock},
     };
 
-    use super::{LlmJsonResponse, LlmTextResponse};
+    use super::{LlmJsonResponse, LlmSettings, LlmTextResponse};
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct MockRequest {
         pub kind: String,
+        pub provider: String,
+        pub model: String,
         pub system_prompt: String,
         pub user_prompt: String,
     }
@@ -441,6 +476,7 @@ pub mod test_support {
     }
 
     pub(crate) fn next_json_response(
+        settings: &LlmSettings,
         system_prompt: &str,
         user_prompt: &str,
     ) -> Option<LlmJsonResponse> {
@@ -448,6 +484,8 @@ pub mod test_support {
         let content = state.json_responses.pop_front()?;
         state.requests.push(MockRequest {
             kind: "json".into(),
+            provider: settings.provider.clone(),
+            model: settings.model.clone(),
             system_prompt: system_prompt.into(),
             user_prompt: user_prompt.into(),
         });
@@ -458,6 +496,7 @@ pub mod test_support {
     }
 
     pub(crate) fn next_markdown_response(
+        settings: &LlmSettings,
         system_prompt: &str,
         user_prompt: &str,
     ) -> Option<LlmTextResponse> {
@@ -465,6 +504,8 @@ pub mod test_support {
         let content = state.markdown_responses.pop_front()?;
         state.requests.push(MockRequest {
             kind: "markdown".into(),
+            provider: settings.provider.clone(),
+            model: settings.model.clone(),
             system_prompt: system_prompt.into(),
             user_prompt: user_prompt.into(),
         });
@@ -529,7 +570,39 @@ mod tests {
     }
 
     #[test]
-    fn openai_body_uses_global_limits_and_context_budget() {
+    fn json_parse_errors_include_raw_llm_response_when_content_exists() {
+        let error = super::parse_json_content("I cannot produce JSON for this request.")
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("LLM response did not contain JSON object"));
+        assert!(error.contains("raw_llm_response:"));
+        assert!(error.contains("I cannot produce JSON for this request."));
+    }
+
+    #[test]
+    fn json_parse_errors_include_provider_response_when_content_is_empty() {
+        let provider_response = serde_json::json!({
+            "choices": [
+                {
+                    "message": {
+                        "content": ""
+                    },
+                    "finish_reason": "stop"
+                }
+            ]
+        });
+        let error = super::parse_json_content_with_provider_response("", &provider_response)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("LLM response did not contain JSON object"));
+        assert!(error.contains("raw_llm_response_json:"));
+        assert!(error.contains("\"finish_reason\":\"stop\""));
+    }
+
+    #[test]
+    fn openai_body_maps_model_limits_temperature_and_context_budget() {
         let mut settings = crate::config::default_llm_settings();
         settings.model = "openai/gpt-4o-mini".into();
         settings.max_context = 4;
@@ -538,6 +611,7 @@ mod tests {
 
         let body = super::openai_chat_body(&settings, "system", "12345678901234567890", true);
 
+        assert_eq!(body["max_completion_tokens"], 123);
         assert_eq!(body["max_tokens"], 123);
         assert_eq!(body["temperature"], 0.7);
         assert_eq!(body["response_format"]["type"], "json_object");

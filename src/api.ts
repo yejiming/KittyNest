@@ -34,9 +34,10 @@ const fallbackState: AppState = {
       projectModel: "",
       sessionModel: "",
       memoryModel: "",
-      taskModel: "",
+      assistantModel: "",
     },
   },
+  llmProviderCalls: [],
   providerPresets: [
     {
       provider: "OpenRouter",

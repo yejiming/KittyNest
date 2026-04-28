@@ -45,7 +45,7 @@ const state: AppState = {
       projectModel: "",
       sessionModel: "",
       memoryModel: "",
-      taskModel: "",
+      assistantModel: "",
     },
   },
   providerPresets: [
@@ -59,6 +59,7 @@ const state: AppState = {
     { source: "Claude Code", path: "/Users/kc/.claude", exists: true },
     { source: "Codex", path: "/Users/kc/.codex", exists: true },
   ],
+  llmProviderCalls: [],
   stats: {
     activeProjects: 1,
     openTasks: 1,
@@ -75,6 +76,7 @@ const state: AppState = {
       infoPath: null,
       progressPath: "/Users/kc/.kittynest/projects/KittyNest/progress.md",
       userPreferencePath: null,
+      agentsPath: null,
       reviewStatus: "not_reviewed",
       lastReviewedAt: null,
       lastSessionAt: "2026-04-26T01:00:00Z",
@@ -160,6 +162,29 @@ describe("KittyNest dashboard", () => {
     expect(document.querySelector(".sessions-panel .session-row:not(.session-row-head) span")).toHaveTextContent(
       "MNOPQRSTUV...",
     );
+  });
+
+  it("renders concept dashboard assets and metric accents", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue(state);
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Dashboard" });
+
+    expect(screen.getByAltText("KittyNest cat avatar")).toHaveClass("brand-avatar");
+    expect(document.querySelector(".dashboard-grid > .metrics-strip")).toBeInTheDocument();
+    expect(document.querySelectorAll(".metrics-strip > .metric")).toHaveLength(4);
+    expect(document.querySelector(".dashboard-grid > .projects-panel")).toBeInTheDocument();
+    expect(document.querySelector(".dashboard-grid > .sessions-panel")).toBeInTheDocument();
+    expect(document.querySelector(".dashboard-grid > .status-panel")).toBeInTheDocument();
+    expect(document.querySelector(".dashboard-grid > .pulse-panel")).toBeInTheDocument();
+    expect(document.querySelector(".metric.metric-projects")).toBeInTheDocument();
+    expect(document.querySelector(".metric.metric-sessions")).toBeInTheDocument();
+    expect(document.querySelector(".metric.metric-tasks")).toBeInTheDocument();
+    expect(document.querySelector(".metric.metric-memory")).toBeInTheDocument();
+    expect(document.querySelector(".pulse-art")).toHaveAttribute("alt", "");
+    expect(document.querySelector(".jobs-layout")).toBeInTheDocument();
+    expect(document.querySelector(".jobs-art")).toHaveAttribute("alt", "");
   });
 
   it("shows a load error instead of staying on the boot screen", async () => {
@@ -322,13 +347,15 @@ describe("KittyNest dashboard", () => {
           infoPath: "/Users/kc/.kittynest/projects/KittyNest/summary.md",
           progressPath: "/Users/kc/.kittynest/projects/KittyNest/progress.md",
           userPreferencePath: "/Users/kc/.kittynest/projects/KittyNest/user_preference.md",
+          agentsPath: "/Users/kc/.kittynest/projects/KittyNest/AGENTS.md",
         },
       ],
     });
     vi.spyOn(api, "readMarkdownFile")
       .mockResolvedValueOnce({ content: "# Summary\n\n- Rust + Tauri\n\n[Docs](https://example.com)" })
       .mockResolvedValueOnce({ content: "# Progress\n\n- Done item" })
-      .mockResolvedValueOnce({ content: "# User Preference\n\n- Prefers concise answers" });
+      .mockResolvedValueOnce({ content: "# User Preference\n\n- Prefers concise answers" })
+      .mockResolvedValueOnce({ content: "# AGENTS.md\n\n- Run focused tests" });
 
     render(<App />);
 
@@ -342,6 +369,8 @@ describe("KittyNest dashboard", () => {
     expect(await screen.findByText("Done item")).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "User Preference", level: 1 })).toBeInTheDocument();
     expect(await screen.findByText("Prefers concise answers")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "AGENTS.md", level: 1 })).toBeInTheDocument();
+    expect(await screen.findByText("Run focused tests")).toBeInTheDocument();
     expect(screen.getByText("Project Path")).toBeInTheDocument();
     expect(screen.getByText("/Users/kc/KittyNest")).toBeInTheDocument();
     expect(screen.getByText("Project Summary Path")).toBeInTheDocument();
@@ -350,6 +379,8 @@ describe("KittyNest dashboard", () => {
     expect(screen.getByText("/Users/kc/.kittynest/projects/KittyNest/progress.md")).toBeInTheDocument();
     expect(screen.getByText("User Preference Path")).toBeInTheDocument();
     expect(screen.getByText("/Users/kc/.kittynest/projects/KittyNest/user_preference.md")).toBeInTheDocument();
+    expect(screen.getByText("AGENTS.md Path")).toBeInTheDocument();
+    expect(screen.getByText("/Users/kc/.kittynest/projects/KittyNest/AGENTS.md")).toBeInTheDocument();
     expect(screen.queryByText(/Review file:/i)).not.toBeInTheDocument();
   });
 
@@ -362,13 +393,15 @@ describe("KittyNest dashboard", () => {
           infoPath: "/Users/kc/.kittynest/projects/KittyNest/summary.md",
           progressPath: "/Users/kc/.kittynest/projects/KittyNest/progress.md",
           userPreferencePath: "/Users/kc/.kittynest/projects/KittyNest/user_preference.md",
+          agentsPath: "/Users/kc/.kittynest/projects/KittyNest/AGENTS.md",
         },
       ],
     });
     vi.spyOn(api, "readMarkdownFile")
       .mockResolvedValueOnce({ content: "# Summary\n\n- First item" })
       .mockResolvedValueOnce({ content: "# Progress\n\n- Second item" })
-      .mockResolvedValueOnce({ content: "# User Preference\n\n- Third item" });
+      .mockResolvedValueOnce({ content: "# User Preference\n\n- Third item" })
+      .mockResolvedValueOnce({ content: "# AGENTS.md\n\n- Fourth item" });
 
     render(<App />);
 
@@ -376,11 +409,11 @@ describe("KittyNest dashboard", () => {
     await userEvent.click(screen.getByRole("button", { name: /not reviewed/i }));
 
     const markdownScrolls = document.querySelectorAll(".markdown-scroll");
-    expect(markdownScrolls).toHaveLength(3);
+    expect(markdownScrolls).toHaveLength(4);
     markdownScrolls.forEach((node) => {
       expect(node.classList.contains("markdown-scroll-hidden")).toBe(false);
     });
-    expect(document.querySelectorAll(".markdown-body")).toHaveLength(3);
+    expect(document.querySelectorAll(".markdown-body")).toHaveLength(4);
   });
 
   it("copies raw markdown from markdown panels", async () => {
@@ -1040,7 +1073,7 @@ describe("KittyNest dashboard", () => {
     expect(getCachedState).toHaveBeenCalledTimes(1);
   });
 
-  it("manages saved LLM models, global limits, and scenario model choices", async () => {
+  it("manages model list, LLM settings, global limits, and scenario model choices", async () => {
     const settingsState = {
       ...state,
       llmSettings: {
@@ -1061,6 +1094,9 @@ describe("KittyNest dashboard", () => {
             interface: "openai",
             model: "openai/gpt-4o-mini",
             apiKey: "sk-openrouter",
+            maxContext: 64000,
+            maxTokens: 2048,
+            temperature: 0.3,
           },
           {
             id: "anthropic-deep",
@@ -1070,6 +1106,9 @@ describe("KittyNest dashboard", () => {
             interface: "anthropic",
             model: "claude-3-5-sonnet-latest",
             apiKey: "sk-anthropic",
+            maxContext: 200000,
+            maxTokens: 8192,
+            temperature: 0.1,
           },
         ],
         scenarioModels: {
@@ -1077,7 +1116,7 @@ describe("KittyNest dashboard", () => {
           projectModel: "anthropic-deep",
           sessionModel: "",
           memoryModel: "",
-          taskModel: "",
+          assistantModel: "",
         },
       },
       providerPresets: [
@@ -1088,22 +1127,46 @@ describe("KittyNest dashboard", () => {
           interface: "anthropic",
         },
       ],
+      llmProviderCalls: [
+        { provider: "OpenRouter", calls: 4 },
+        { provider: "Anthropic", calls: 2 },
+        { provider: "Unused", calls: 0 },
+      ],
     } as AppState;
+    let latestState = settingsState;
     vi.spyOn(api, "getAppState").mockResolvedValue(settingsState);
-    vi.spyOn(api as ApiWithReviewQueue, "getCachedAppState").mockResolvedValue(settingsState);
-    const saveLlmSettings = vi.spyOn(api, "saveLlmSettings").mockResolvedValue({ saved: true });
+    vi.spyOn(api as ApiWithReviewQueue, "getCachedAppState").mockImplementation(async () => latestState);
+    const saveLlmSettings = vi.spyOn(api, "saveLlmSettings").mockImplementation(async (settings) => {
+      latestState = { ...settingsState, llmSettings: settings };
+      return { saved: true };
+    });
 
     render(<App />);
 
     await userEvent.click(await screen.findByRole("button", { name: /^settings$/i }));
     expect(screen.queryByRole("heading", { name: /session sources/i })).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "LLM Global Settings" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "LLM Global Settings" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Model List" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "LLM Settings" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Saved Models" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Use Model For" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Anthropic Deep" })).toBeInTheDocument();
+    expect(screen.getByLabelText(/assistant model/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/task model/i)).not.toBeInTheDocument();
+    const providerCalls = document.querySelector(".provider-call-stats");
+    expect(providerCalls).toHaveTextContent("Provider Calls");
+    expect(providerCalls).toHaveTextContent("OpenRouter");
+    expect(providerCalls).toHaveTextContent("4");
+    expect(providerCalls).toHaveTextContent("Anthropic");
+    expect(providerCalls).toHaveTextContent("2");
+    expect(providerCalls).not.toHaveTextContent("Unused");
 
     await userEvent.click(screen.getByRole("button", { name: "Anthropic Deep" }));
     expect(screen.getByLabelText(/^Provider$/i)).toHaveValue("Anthropic");
     expect(screen.getByLabelText(/^Remark$/i)).toHaveValue("Deep");
     expect(screen.getByLabelText(/^Remark$/i)).toBeRequired();
+    expect(screen.getByLabelText(/max tokens/i)).toHaveValue(8192);
+    expect(screen.getByLabelText(/temperature/i)).toHaveValue(0.1);
 
     await userEvent.clear(screen.getByLabelText(/max tokens/i));
     await userEvent.type(screen.getByLabelText(/max tokens/i), "4096");
@@ -1114,15 +1177,12 @@ describe("KittyNest dashboard", () => {
 
     await waitFor(() => expect(saveLlmSettings).toHaveBeenCalledTimes(1));
     expect(saveLlmSettings).toHaveBeenCalledWith(expect.objectContaining({
-      maxContext: 64000,
-      maxTokens: 4096,
-      temperature: 0.45,
       scenarioModels: {
         defaultModel: "openrouter-fast",
         projectModel: "anthropic-deep",
         sessionModel: "openrouter-fast",
         memoryModel: "",
-        taskModel: "",
+        assistantModel: "",
       },
       models: expect.arrayContaining([
         expect.objectContaining({
@@ -1131,8 +1191,45 @@ describe("KittyNest dashboard", () => {
           remark: "Deep",
           interface: "anthropic",
           model: "claude-3-5-sonnet-latest",
+          maxContext: 200000,
+          maxTokens: 4096,
+          temperature: 0.45,
         }),
       ]),
     }));
+
+    saveLlmSettings.mockClear();
+    await userEvent.selectOptions(screen.getByLabelText(/assistant model/i), "anthropic-deep");
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(saveLlmSettings).toHaveBeenCalledTimes(1));
+    expect(saveLlmSettings).toHaveBeenCalledWith(expect.objectContaining({
+      scenarioModels: expect.objectContaining({
+        assistantModel: "anthropic-deep",
+      }),
+    }));
+
+    saveLlmSettings.mockClear();
+    await userEvent.click(screen.getByRole("button", { name: /^add model$/i }));
+    expect(screen.getByLabelText(/^Remark$/i)).toHaveValue("");
+    expect(screen.getByLabelText(/^Model$/i)).toHaveValue("");
+    await userEvent.type(screen.getByLabelText(/^Remark$/i), "Draft");
+    await userEvent.type(screen.getByLabelText(/^Model$/i), "openai/gpt-4.1-mini");
+    await userEvent.click(screen.getByRole("button", { name: /^save model$/i }));
+
+    await waitFor(() => expect(saveLlmSettings).toHaveBeenCalledTimes(1));
+    expect(saveLlmSettings).toHaveBeenCalledWith(expect.objectContaining({
+      models: expect.arrayContaining([
+        expect.objectContaining({
+          id: "openrouter-draft",
+          provider: "OpenRouter",
+          remark: "Draft",
+          model: "openai/gpt-4.1-mini",
+          maxContext: 128000,
+          maxTokens: 4096,
+          temperature: 0.2,
+        }),
+      ]),
+    }));
+    expect(screen.getByRole("button", { name: "OpenRouter Draft" })).toBeInTheDocument();
   });
 });

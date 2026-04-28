@@ -2,8 +2,8 @@ use rusqlite::{params, OptionalExtension};
 
 use crate::models::{
     AppPaths, DashboardStats, EnqueueJobResult, JobRecord, MemorySearchRecord,
-    MemorySearchResultRecord, ProjectRecord, ProjectSessionSummary, RawMessage, RawSession,
-    SessionRecord, StoredSession, TaskRecord,
+    MemorySearchResultRecord, ProjectRecord, ProjectSessionSummary, ProviderCallCount, RawMessage,
+    RawSession, SessionRecord, StoredSession, TaskRecord,
 };
 
 pub const PROJECT_ANALYZE_SESSION_LIMIT: usize = 20;
@@ -27,6 +27,7 @@ pub fn migrate(connection: &rusqlite::Connection) -> anyhow::Result<()> {
           info_path TEXT,
           progress_path TEXT,
           user_preference_path TEXT,
+          agents_path TEXT,
           review_status TEXT NOT NULL DEFAULT 'not_reviewed',
           last_reviewed_at TEXT,
           last_session_at TEXT,
@@ -112,6 +113,11 @@ pub fn migrate(connection: &rusqlite::Connection) -> anyhow::Result<()> {
           memory TEXT NOT NULL,
           ordinal INTEGER NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS llm_provider_calls (
+          provider TEXT PRIMARY KEY,
+          calls INTEGER NOT NULL DEFAULT 0
+        );
         "#,
     )?;
     add_column_if_missing(
@@ -166,6 +172,7 @@ pub fn migrate(connection: &rusqlite::Connection) -> anyhow::Result<()> {
         "user_preference_path",
         "user_preference_path TEXT",
     )?;
+    add_column_if_missing(connection, "projects", "agents_path", "agents_path TEXT")?;
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_session_memories_source_session ON session_memories(source_session, ordinal)",
         [],
@@ -363,7 +370,7 @@ pub fn list_projects(connection: &rusqlite::Connection) -> anyhow::Result<Vec<Pr
     let mut statement = connection.prepare(
         r#"
         SELECT slug, display_title, workdir, sources, info_path, progress_path, user_preference_path,
-               review_status, last_reviewed_at, last_session_at
+               agents_path, review_status, last_reviewed_at, last_session_at
         FROM projects
         ORDER BY COALESCE(last_session_at, updated_at) DESC, display_title ASC
         "#,
@@ -378,9 +385,10 @@ pub fn list_projects(connection: &rusqlite::Connection) -> anyhow::Result<Vec<Pr
             info_path: row.get(4)?,
             progress_path: row.get(5)?,
             user_preference_path: row.get(6)?,
-            review_status: row.get(7)?,
-            last_reviewed_at: row.get(8)?,
-            last_session_at: row.get(9)?,
+            agents_path: row.get(7)?,
+            review_status: row.get(8)?,
+            last_reviewed_at: row.get(9)?,
+            last_session_at: row.get(10)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -394,7 +402,7 @@ pub fn get_project_by_slug(
         .query_row(
             r#"
             SELECT id, slug, display_title, workdir, sources, info_path, progress_path, user_preference_path,
-                   review_status, last_reviewed_at, last_session_at
+                   agents_path, review_status, last_reviewed_at, last_session_at
             FROM projects
             WHERE slug = ?1
             "#,
@@ -411,9 +419,10 @@ pub fn get_project_by_slug(
                         info_path: row.get(5)?,
                         progress_path: row.get(6)?,
                         user_preference_path: row.get(7)?,
-                        review_status: row.get(8)?,
-                        last_reviewed_at: row.get(9)?,
-                        last_session_at: row.get(10)?,
+                        agents_path: row.get(8)?,
+                        review_status: row.get(9)?,
+                        last_reviewed_at: row.get(10)?,
+                        last_session_at: row.get(11)?,
                     },
                 ))
             },
@@ -503,6 +512,46 @@ pub fn dashboard_stats(connection: &rusqlite::Connection) -> anyhow::Result<Dash
     })
 }
 
+pub fn record_llm_provider_call(
+    connection: &rusqlite::Connection,
+    provider: &str,
+) -> anyhow::Result<()> {
+    let provider = provider.trim();
+    if provider.is_empty() {
+        return Ok(());
+    }
+    connection.execute(
+        r#"
+        INSERT INTO llm_provider_calls (provider, calls)
+        VALUES (?1, 1)
+        ON CONFLICT(provider) DO UPDATE SET calls = calls + 1
+        "#,
+        params![provider],
+    )?;
+    Ok(())
+}
+
+pub fn list_llm_provider_calls(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<Vec<ProviderCallCount>> {
+    let mut statement = connection.prepare(
+        r#"
+        SELECT provider, calls
+        FROM llm_provider_calls
+        WHERE calls > 0
+        ORDER BY calls DESC, provider COLLATE NOCASE ASC
+        "#,
+    )?;
+    let rows = statement.query_map([], |row| {
+        let calls: i64 = row.get(1)?;
+        Ok(ProviderCallCount {
+            provider: row.get(0)?,
+            calls: calls as usize,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
 pub fn enqueue_analyze_sessions(
     connection: &rusqlite::Connection,
     updated_after: Option<&str>,
@@ -551,7 +600,7 @@ pub fn enqueue_analyze_project(
     project_slug: &str,
 ) -> anyhow::Result<EnqueueJobResult> {
     let pending = count_project_sessions_needing_analysis(connection, project_slug)?;
-    let total = pending + 3;
+    let total = pending + 4;
     enqueue_job(
         connection,
         "analyze_project",
@@ -1570,6 +1619,18 @@ pub fn update_project_user_preference(
     Ok(())
 }
 
+pub fn update_project_agents(
+    connection: &rusqlite::Connection,
+    project_slug: &str,
+    agents_path: &str,
+) -> anyhow::Result<()> {
+    connection.execute(
+        "UPDATE projects SET agents_path = ?1, updated_at = ?2 WHERE slug = ?3",
+        params![agents_path, crate::utils::now_rfc3339(), project_slug],
+    )?;
+    Ok(())
+}
+
 pub fn update_task_status(
     connection: &rusqlite::Connection,
     project_slug: &str,
@@ -1746,11 +1807,12 @@ mod tests {
     use super::{
         cancel_job, claim_next_job, delete_task_if_empty, enqueue_analyze_project_sessions,
         enqueue_analyze_session, enqueue_analyze_sessions, enqueue_review_project,
-        enqueue_scan_sources, list_active_jobs, list_projects, list_sessions, list_tasks,
-        mark_session_failed, mark_session_processed, mark_session_processed_with_optional_task,
-        mark_stale_running_jobs_queued, migrate, open, replace_session_memories,
-        reset_all_memories, reset_all_projects, reset_all_sessions, reset_all_tasks,
-        session_memories_by_session_id, unprocessed_session_by_session_id, unprocessed_sessions,
+        enqueue_scan_sources, list_active_jobs, list_llm_provider_calls, list_projects,
+        list_sessions, list_tasks, mark_session_failed, mark_session_processed,
+        mark_session_processed_with_optional_task, mark_stale_running_jobs_queued, migrate, open,
+        record_llm_provider_call, replace_session_memories, reset_all_memories, reset_all_projects,
+        reset_all_sessions, reset_all_tasks, session_memories_by_session_id,
+        unprocessed_session_by_session_id, unprocessed_sessions,
         unprocessed_sessions_updated_after, update_job_progress, update_project_progress,
         update_project_review, upsert_raw_sessions, upsert_task,
     };
@@ -2113,7 +2175,7 @@ mod tests {
             super::project_sessions_needing_analysis_limited(&connection, &project.slug, 20)
                 .unwrap();
 
-        assert_eq!(result.total, 3);
+        assert_eq!(result.total, 4);
         assert!(sessions.is_empty());
     }
 
@@ -2974,5 +3036,27 @@ mod tests {
 
         assert!(cancel_job(&connection, job.job_id).unwrap());
         assert!(list_active_jobs(&connection).unwrap().is_empty());
+    }
+
+    #[test]
+    fn provider_call_counts_return_positive_counts_by_provider() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
+        std::fs::create_dir_all(&paths.data_dir).unwrap();
+        let connection = open(&paths).unwrap();
+        migrate(&connection).unwrap();
+
+        record_llm_provider_call(&connection, "OpenRouter").unwrap();
+        record_llm_provider_call(&connection, "OpenRouter").unwrap();
+        record_llm_provider_call(&connection, "Anthropic").unwrap();
+        record_llm_provider_call(&connection, "   ").unwrap();
+
+        let counts = list_llm_provider_calls(&connection).unwrap();
+
+        assert_eq!(counts.len(), 2);
+        assert_eq!(counts[0].provider, "OpenRouter");
+        assert_eq!(counts[0].calls, 2);
+        assert_eq!(counts[1].provider, "Anthropic");
+        assert_eq!(counts[1].calls, 1);
     }
 }

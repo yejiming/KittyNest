@@ -1,6 +1,5 @@
 import {
   Activity,
-  Boxes,
   BrainCircuit,
   CheckCircle2,
   CircleStop,
@@ -10,6 +9,7 @@ import {
   Gauge,
   History,
   Loader2,
+  Plus,
   RefreshCw,
   ScanLine,
   Send,
@@ -32,6 +32,9 @@ import "@xyflow/react/dist/style.css";
 import { useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import kittyAvatar from "../src-tauri/assets/kittynest-cat-avatar.png";
+import memoryPulseBrain from "../src-tauri/assets/memory-pulse-brain.png";
+import tauriJobsCube from "../src-tauri/assets/tauri-jobs-cube.png";
 import {
   createTask,
   enqueueAnalyzeSessions,
@@ -247,7 +250,7 @@ export default function App() {
           <span />
         </div>
         <button className="brand" aria-label="Dashboard home" onClick={() => setView("dashboard")}>
-          <Boxes size={32} />
+          <img className="brand-avatar" src={kittyAvatar} alt="KittyNest cat avatar" />
           <span>
             <strong>KittyNest</strong>
             <small>Local Mode</small>
@@ -480,10 +483,12 @@ function Dashboard({
   );
   return (
     <section className="dashboard-grid">
-      <Metric icon={<FolderKanban />} label="Active Projects" value={state.stats.activeProjects} detail={`${state.projects.filter((p) => p.reviewStatus !== "reviewed").length} need review`} />
-      <Metric icon={<History />} label="Sessions" value={state.stats.sessions} detail={`${state.stats.unprocessedSessions} new`} />
-      <Metric icon={<CheckCircle2 />} label="Open Tasks" value={state.stats.openTasks} detail={`${state.tasks.filter((task) => task.status === "developing").length} in development`} />
-      <Metric icon={<BrainCircuit />} label="Memory Updates" value={state.stats.memories} detail="local memory" />
+      <div className="metrics-strip">
+        <Metric tone="projects" icon={<FolderKanban />} label="Active Projects" value={state.stats.activeProjects} detail={`${state.projects.filter((p) => p.reviewStatus !== "reviewed").length} need review`} />
+        <Metric tone="sessions" icon={<History />} label="Sessions" value={state.stats.sessions} detail={`${state.stats.unprocessedSessions} new`} />
+        <Metric tone="tasks" icon={<CheckCircle2 />} label="Open Tasks" value={state.stats.openTasks} detail={`${state.tasks.filter((task) => task.status === "developing").length} in development`} />
+        <Metric tone="memory" icon={<BrainCircuit />} label="Memory Updates" value={state.stats.memories} detail="local memory" />
+      </div>
 
       <section className="panel projects-panel">
         <PanelTitle title="Projects" action={<IconButton label="Scan" icon={<ScanLine size={16} />} onClick={onScan} busy={busy === "Scan new sessions"} />} />
@@ -546,15 +551,20 @@ function Dashboard({
       <section className="panel pulse-panel">
         <PanelTitle title="Memory Pulse" action={<IconButton label="Refresh" icon={<RefreshCw size={16} />} onClick={onRefreshMemories} busy={busy === "Refresh memories"} />} />
         <div className="pulse">
-          <BrainCircuit size={54} />
-          <strong>Project memory draft</strong>
-          <span>{state.stats.memories} memory files indexed</span>
+          <img className="pulse-art" src={memoryPulseBrain} alt="" />
+          <div className="pulse-copy">
+            <strong>Project memory draft</strong>
+            <span>{state.stats.memories} memory files indexed</span>
+          </div>
         </div>
       </section>
 
       <section className="panel jobs-panel">
         <PanelTitle title="Analyze Jobs" action={<StatusPill tone="cyan" icon={<Activity size={16} />} label={busy ? "Running" : "Idle"} />} />
-        <JobsTable jobs={state.jobs} onStop={onStopJob} />
+        <div className="jobs-layout">
+          <JobsTable jobs={state.jobs} onStop={onStopJob} />
+          <img className="jobs-art" src={tauriJobsCube} alt="" />
+        </div>
       </section>
     </section>
   );
@@ -782,6 +792,7 @@ function ProjectView({
           <ProjectPath label="Project Summary Path" value={project.infoPath ?? "Not generated yet."} />
           <ProjectPath label="Project Progress Path" value={project.progressPath ?? "Not generated yet."} />
           <ProjectPath label="User Preference Path" value={project.userPreferencePath ?? "Not generated yet."} />
+          <ProjectPath label="AGENTS.md Path" value={project.agentsPath ?? "Not generated yet."} />
         </div>
         <div className="button-row">
           <IconButton label="Analyze" icon={<Sparkles size={16} />} onClick={onAnalyze} busy={busy === "Queue project analyze"} />
@@ -802,6 +813,11 @@ function ProjectView({
           title="User Preference"
           path={project.userPreferencePath}
           empty="Analyze the project to generate user preferences."
+        />
+        <MarkdownPanel
+          title="AGENTS.md"
+          path={project.agentsPath}
+          empty="Analyze the project to generate AGENTS.md."
         />
       </div>
       <div className="task-grid">
@@ -1374,6 +1390,7 @@ function SettingsView({
     initialDraftModel(normalizeLlmSettings(state.llmSettings)),
   );
   const [editingModelId, setEditingModelId] = useState(draftModel.id);
+  const providerCallCounts = (state.llmProviderCalls ?? []).filter((item) => item.calls > 0);
 
   useEffect(() => {
     const normalized = normalizeLlmSettings(state.llmSettings);
@@ -1403,6 +1420,9 @@ function SettingsView({
       },
     }));
   };
+  const saveModelList = () => {
+    onSave(settingsWithDefaultModel(settings));
+  };
   const saveModel = () => {
     if (!canSaveModel) return;
     const nextModel = {
@@ -1414,6 +1434,9 @@ function SettingsView({
       interface: draftModel.interface.trim() || "openai",
       model: draftModel.model.trim(),
       apiKey: draftModel.apiKey.trim(),
+      maxContext: Math.max(0, Math.round(draftModel.maxContext || 0)),
+      maxTokens: Math.max(0, Math.round(draftModel.maxTokens || 0)),
+      temperature: Number.isFinite(draftModel.temperature) ? draftModel.temperature : 0.2,
     };
     const nextModels = upsertLlmModel(settings.models, editingModelId, nextModel);
     const nextScenarioModels = rewriteScenarioModelIds(settings.scenarioModels, editingModelId, nextModel.id);
@@ -1424,9 +1447,6 @@ function SettingsView({
     const nextSettings = {
       ...settings,
       ...llmModelFields(defaultModel),
-      maxContext: Math.max(0, Math.round(settings.maxContext || 0)),
-      maxTokens: Math.max(0, Math.round(settings.maxTokens || 0)),
-      temperature: Number.isFinite(settings.temperature) ? settings.temperature : 0.2,
       models: nextModels,
       scenarioModels: nextScenarioModels,
     };
@@ -1438,139 +1458,161 @@ function SettingsView({
 
   return (
     <section className="settings-grid">
-      <div className="panel wide llm-provider-panel">
-        <h2>LLM Provider</h2>
-        <div className="llm-provider-grid">
-          <div className="llm-provider-left">
-            <h3>Saved Models</h3>
-            <div className="llm-model-list">
-              {settings.models.map((model) => (
-                <button
-                  key={model.id}
-                  className={`llm-model-row ${editingModelId === model.id ? "active" : ""}`}
-                  onClick={() => {
-                    setDraftModel(model);
-                    setEditingModelId(model.id);
-                  }}
-                >
-                  <strong>{model.provider}</strong>
-                  <span>{model.remark}</span>
-                </button>
-              ))}
-              {settings.models.length === 0 && <p className="empty-line">No saved models yet.</p>}
-            </div>
-            <div className="llm-scenarios">
-              <h3>Use Model For</h3>
-              <ScenarioSelect
-                label="Default model"
-                value={settings.scenarioModels.defaultModel}
-                models={settings.models}
-                required
-                onChange={(value) => updateScenarioModel("defaultModel", value)}
-              />
-              <ScenarioSelect
-                label="Project model"
-                value={settings.scenarioModels.projectModel}
-                models={settings.models}
-                onChange={(value) => updateScenarioModel("projectModel", value)}
-              />
-              <ScenarioSelect
-                label="Session model"
-                value={settings.scenarioModels.sessionModel}
-                models={settings.models}
-                onChange={(value) => updateScenarioModel("sessionModel", value)}
-              />
-              <ScenarioSelect
-                label="Memory model"
-                value={settings.scenarioModels.memoryModel}
-                models={settings.models}
-                onChange={(value) => updateScenarioModel("memoryModel", value)}
-              />
-              <ScenarioSelect
-                label="Task model"
-                value={settings.scenarioModels.taskModel}
-                models={settings.models}
-                onChange={(value) => updateScenarioModel("taskModel", value)}
-              />
-            </div>
-          </div>
-          <div className="llm-provider-right">
-            <label className="settings-form-row">
-              <span>Provider</span>
-              <select
-                aria-label="Provider"
-                value={draftModel.provider}
-                onChange={(event) => {
-                  const preset = state.providerPresets.find((item) => item.provider === event.target.value);
-                  setDraftModel((current) => preset
-                    ? { ...current, provider: preset.provider, baseUrl: preset.baseUrl, interface: preset.interface }
-                    : { ...current, provider: event.target.value });
+      <div className="panel model-list-panel">
+        <h2>Model List</h2>
+        <div className="model-list-card-body">
+          <div className="llm-model-list">
+            {settings.models.map((model) => (
+              <button
+                key={model.id}
+                className={`llm-model-row ${editingModelId === model.id ? "active" : ""}`}
+                onClick={() => {
+                  setDraftModel(model);
+                  setEditingModelId(model.id);
                 }}
               >
-                {providerOptions.map((preset) => (
-                  <option key={preset.provider} value={preset.provider}>{preset.provider}</option>
-                ))}
-              </select>
-            </label>
-            <label className="settings-form-row">
-              <span>Remark</span>
-              <input
-                required
-                value={draftModel.remark}
-                onChange={(event) => setDraftModel({ ...draftModel, remark: event.target.value })}
-              />
-            </label>
-            <label className="settings-form-row">
-              <span>Interface</span>
-              <input value={draftModel.interface} onChange={(event) => setDraftModel({ ...draftModel, interface: event.target.value })} />
-            </label>
-            <label className="settings-form-row">
-              <span>Base URL</span>
-              <input value={draftModel.baseUrl} onChange={(event) => setDraftModel({ ...draftModel, baseUrl: event.target.value })} />
-            </label>
-            <label className="settings-form-row">
-              <span>Model</span>
-              <input value={draftModel.model} onChange={(event) => setDraftModel({ ...draftModel, model: event.target.value })} />
-            </label>
-            <label className="settings-form-row">
-              <span>API Key</span>
-              <input type="password" value={draftModel.apiKey} onChange={(event) => setDraftModel({ ...draftModel, apiKey: event.target.value })} />
-            </label>
-            <IconButton label="Save Model" icon={<CheckCircle2 size={16} />} onClick={saveModel} disabled={!canSaveModel} />
+                <strong>{model.provider}</strong>
+                <span>{model.remark}</span>
+              </button>
+            ))}
+            {settings.models.length === 0 && <p className="empty-line">No saved models yet.</p>}
           </div>
+          <button
+            aria-label="Add Model"
+            className="llm-add-model"
+            onClick={() => {
+              setDraftModel(blankLlmModel(state.providerPresets));
+              setEditingModelId("");
+            }}
+          >
+            <Plus size={18} />
+          </button>
+          <div className="llm-scenarios">
+            <ScenarioSelect
+              label="Default model"
+              value={settings.scenarioModels.defaultModel}
+              models={settings.models}
+              required
+              onChange={(value) => updateScenarioModel("defaultModel", value)}
+            />
+            <ScenarioSelect
+              label="Project model"
+              value={settings.scenarioModels.projectModel}
+              models={settings.models}
+              onChange={(value) => updateScenarioModel("projectModel", value)}
+            />
+            <ScenarioSelect
+              label="Session model"
+              value={settings.scenarioModels.sessionModel}
+              models={settings.models}
+              onChange={(value) => updateScenarioModel("sessionModel", value)}
+            />
+            <ScenarioSelect
+              label="Memory model"
+              value={settings.scenarioModels.memoryModel}
+              models={settings.models}
+              onChange={(value) => updateScenarioModel("memoryModel", value)}
+            />
+            <ScenarioSelect
+              label="Assistant model"
+              value={settings.scenarioModels.assistantModel}
+              models={settings.models}
+              onChange={(value) => updateScenarioModel("assistantModel", value)}
+            />
+          </div>
+          {providerCallCounts.length > 0 && (
+            <div className="provider-call-stats">
+              <strong>Provider Calls</strong>
+              <div>
+                {providerCallCounts.map((item) => (
+                  <span key={item.provider}>
+                    <em>{item.provider}</em>
+                    <b>{item.calls}</b>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="model-list-actions">
+          <IconButton label="Save" icon={<CheckCircle2 size={16} />} onClick={saveModelList} disabled={!settings.scenarioModels.defaultModel} />
         </div>
       </div>
-      <div className="panel">
-        <h3>LLM Global Settings</h3>
-        <label className="settings-form-row compact">
+      <div className="panel llm-settings-panel">
+        <h2>LLM Settings</h2>
+        <label className="settings-form-row">
+          <span>Provider</span>
+          <select
+            aria-label="Provider"
+            value={draftModel.provider}
+            onChange={(event) => {
+              const preset = state.providerPresets.find((item) => item.provider === event.target.value);
+              setDraftModel((current) => preset
+                ? { ...current, provider: preset.provider, baseUrl: preset.baseUrl, interface: preset.interface }
+                : { ...current, provider: event.target.value });
+            }}
+          >
+            {providerOptions.map((preset) => (
+              <option key={preset.provider} value={preset.provider}>{preset.provider}</option>
+            ))}
+          </select>
+        </label>
+        <label className="settings-form-row">
+          <span>Remark</span>
+          <input
+            required
+            value={draftModel.remark}
+            onChange={(event) => setDraftModel({ ...draftModel, remark: event.target.value })}
+          />
+        </label>
+        <label className="settings-form-row">
+          <span>Interface</span>
+          <input value={draftModel.interface} onChange={(event) => setDraftModel({ ...draftModel, interface: event.target.value })} />
+        </label>
+        <label className="settings-form-row">
+          <span>Base URL</span>
+          <input value={draftModel.baseUrl} onChange={(event) => setDraftModel({ ...draftModel, baseUrl: event.target.value })} />
+        </label>
+        <label className="settings-form-row">
+          <span>Model</span>
+          <input value={draftModel.model} onChange={(event) => setDraftModel({ ...draftModel, model: event.target.value })} />
+        </label>
+        <label className="settings-form-row">
+          <span>API Key</span>
+          <input type="password" value={draftModel.apiKey} onChange={(event) => setDraftModel({ ...draftModel, apiKey: event.target.value })} />
+        </label>
+        <label className="settings-form-row">
           <span>Max Context</span>
           <input
             type="number"
             min={0}
-            value={settings.maxContext}
-            onChange={(event) => setSettings({ ...settings, maxContext: event.currentTarget.valueAsNumber || 0 })}
+            value={draftModel.maxContext}
+            onChange={(event) => setDraftModel({ ...draftModel, maxContext: event.currentTarget.valueAsNumber || 0 })}
           />
         </label>
-        <label className="settings-form-row compact">
+        <label className="settings-form-row">
           <span>Max Tokens</span>
           <input
             type="number"
             min={0}
-            value={settings.maxTokens}
-            onChange={(event) => setSettings({ ...settings, maxTokens: event.currentTarget.valueAsNumber || 0 })}
+            value={draftModel.maxTokens}
+            onChange={(event) => setDraftModel({ ...draftModel, maxTokens: event.currentTarget.valueAsNumber || 0 })}
           />
         </label>
-        <label className="settings-form-row compact">
+        <label className="settings-form-row">
           <span>Temperature</span>
           <input
             type="number"
             min={0}
             max={2}
             step={0.01}
-            value={settings.temperature}
-            onChange={(event) => setSettings({ ...settings, temperature: event.currentTarget.valueAsNumber || 0 })}
+            value={draftModel.temperature}
+            onChange={(event) => setDraftModel({ ...draftModel, temperature: event.currentTarget.valueAsNumber || 0 })}
           />
         </label>
+        <div className="llm-settings-actions">
+          <IconButton label="Save Model" icon={<CheckCircle2 size={16} />} onClick={saveModel} disabled={!canSaveModel} />
+        </div>
       </div>
       <div className="panel">
         <h3>Reset State</h3>
@@ -1599,8 +1641,8 @@ function ScenarioSelect({
   onChange: (value: string) => void;
 }) {
   return (
-    <label>
-      {label}
+    <label className="scenario-select-row">
+      <span>{label}</span>
       <select
         aria-label={label}
         value={value}
@@ -1619,21 +1661,21 @@ function ScenarioSelect({
 }
 
 function normalizeLlmSettings(settings: LlmSettings): LlmSettings {
-  const models = settings.models?.length ? settings.models : legacyLlmModel(settings);
+  const models = (settings.models?.length ? settings.models : legacyLlmModel(settings)).map((model) =>
+    normalizeLlmModel(model, settings),
+  );
+  const legacyScenarioModels = settings.scenarioModels as LlmSettings["scenarioModels"] & { taskModel?: string };
   const scenarioModels = {
     defaultModel: settings.scenarioModels?.defaultModel || models[0]?.id || "",
     projectModel: settings.scenarioModels?.projectModel || "",
     sessionModel: settings.scenarioModels?.sessionModel || "",
     memoryModel: settings.scenarioModels?.memoryModel || "",
-    taskModel: settings.scenarioModels?.taskModel || "",
+    assistantModel: settings.scenarioModels?.assistantModel || legacyScenarioModels?.taskModel || "",
   };
   const activeModel = models.find((model) => model.id === scenarioModels.defaultModel) ?? models[0];
   return {
     ...settings,
     ...llmModelFields(activeModel ?? modelFromSettings(settings)),
-    maxContext: settings.maxContext ?? 128000,
-    maxTokens: settings.maxTokens ?? 4096,
-    temperature: settings.temperature ?? 0.2,
     models,
     scenarioModels,
   };
@@ -1660,6 +1702,9 @@ function modelFromSettings(settings: LlmSettings): LlmModelSettings {
     interface: settings.interface,
     model: settings.model,
     apiKey: settings.apiKey,
+    maxContext: settings.maxContext ?? 128000,
+    maxTokens: settings.maxTokens ?? 4096,
+    temperature: settings.temperature ?? 0.2,
   };
 }
 
@@ -1672,7 +1717,31 @@ function llmModelFields(model: LlmModelSettings) {
     interface: model.interface,
     model: model.model,
     apiKey: model.apiKey,
+    maxContext: model.maxContext,
+    maxTokens: model.maxTokens,
+    temperature: model.temperature,
   };
+}
+
+function blankLlmModel(presets: AppState["providerPresets"]): LlmModelSettings {
+  const preset = presets[0] ?? { provider: "", baseUrl: "", interface: "openai" };
+  return {
+    id: "",
+    provider: preset.provider,
+    remark: "",
+    baseUrl: preset.baseUrl,
+    interface: preset.interface,
+    model: "",
+    apiKey: "",
+    maxContext: 128000,
+    maxTokens: 4096,
+    temperature: 0.2,
+  };
+}
+
+function settingsWithDefaultModel(settings: LlmSettings) {
+  const defaultModel = settings.models.find((model) => model.id === settings.scenarioModels.defaultModel);
+  return defaultModel ? { ...settings, ...llmModelFields(defaultModel) } : settings;
 }
 
 function upsertLlmModel(models: LlmModelSettings[], editingModelId: string, nextModel: LlmModelSettings) {
@@ -1690,7 +1759,16 @@ function rewriteScenarioModelIds(
     projectModel: scenarioModels.projectModel === oldModelId ? nextModelId : scenarioModels.projectModel,
     sessionModel: scenarioModels.sessionModel === oldModelId ? nextModelId : scenarioModels.sessionModel,
     memoryModel: scenarioModels.memoryModel === oldModelId ? nextModelId : scenarioModels.memoryModel,
-    taskModel: scenarioModels.taskModel === oldModelId ? nextModelId : scenarioModels.taskModel,
+    assistantModel: scenarioModels.assistantModel === oldModelId ? nextModelId : scenarioModels.assistantModel,
+  };
+}
+
+function normalizeLlmModel(model: LlmModelSettings, settings: LlmSettings): LlmModelSettings {
+  return {
+    ...model,
+    maxContext: model.maxContext ?? settings.maxContext ?? 128000,
+    maxTokens: model.maxTokens ?? settings.maxTokens ?? 4096,
+    temperature: model.temperature ?? settings.temperature ?? 0.2,
   };
 }
 
@@ -1698,9 +1776,21 @@ function llmModelId(provider: string, remark: string) {
   return `${provider.trim().toLowerCase().replace(/\s+/g, "-")}-${remark.trim().toLowerCase().replace(/\s+/g, "-")}`;
 }
 
-function Metric({ icon, label, value, detail }: { icon: React.ReactNode; label: string; value: number; detail: string }) {
+function Metric({
+  icon,
+  label,
+  value,
+  detail,
+  tone,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: number;
+  detail: string;
+  tone: "projects" | "tasks" | "sessions" | "memory";
+}) {
   return (
-    <section className="metric">
+    <section className={`metric metric-${tone}`}>
       <span className="metric-icon">{icon}</span>
       <small>{label}</small>
       <strong>{String(value).padStart(2, "0")}</strong>
