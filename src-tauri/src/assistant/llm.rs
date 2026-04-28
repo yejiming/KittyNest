@@ -14,6 +14,7 @@ pub struct AssistantToolCall {
 #[derive(Clone, Debug, PartialEq)]
 pub struct AssistantLlmResponse {
     pub content: String,
+    pub reasoning_content: String,
     pub tool_calls: Vec<AssistantToolCall>,
 }
 
@@ -60,6 +61,7 @@ where
     F: FnMut(&str),
 {
     let mut content = String::new();
+    let mut reasoning_content = String::new();
     let mut tool_call_map: BTreeMap<usize, ToolCallParts> = BTreeMap::new();
 
     for line in BufReader::new(reader).lines() {
@@ -81,6 +83,12 @@ where
         if let Some(token) = delta.get("content").and_then(serde_json::Value::as_str) {
             content.push_str(token);
             on_token(token);
+        }
+        if let Some(reasoning) = delta
+            .get("reasoning_content")
+            .and_then(serde_json::Value::as_str)
+        {
+            reasoning_content.push_str(reasoning);
         }
         let Some(tool_calls) = delta
             .get("tool_calls")
@@ -127,6 +135,7 @@ where
 
     Ok(AssistantLlmResponse {
         content,
+        reasoning_content,
         tool_calls,
     })
 }
@@ -255,6 +264,8 @@ mod tests {
     fn sse_parser_collects_tokens_and_tool_call_arguments() {
         let input = concat!(
             "data: {\"choices\":[{\"delta\":{\"content\":\"Hi \"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Need to inspect \"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"the file.\"}}]}\n\n",
             "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"file_path\\\":\"}}]}}]}\n\n",
             "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"src/App.tsx\\\"}\"}}]}}]}\n\n",
             "data: [DONE]\n\n"
@@ -263,6 +274,7 @@ mod tests {
         let response = super::parse_openai_sse(input.as_bytes(), |_| {}).unwrap();
 
         assert_eq!(response.content, "Hi ");
+        assert_eq!(response.reasoning_content, "Need to inspect the file.");
         assert_eq!(response.tool_calls.len(), 1);
         assert_eq!(response.tool_calls[0].id, "call_1");
         assert_eq!(response.tool_calls[0].name, "read_file");

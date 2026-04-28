@@ -498,6 +498,7 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
             self.append_assistant_tool_call_message(
                 session_id,
                 &response.content,
+                &response.reasoning_content,
                 &response.tool_calls,
             );
 
@@ -645,6 +646,7 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
         &self,
         session_id: &str,
         content: &str,
+        reasoning_content: &str,
         tool_calls: &[llm::AssistantToolCall],
     ) {
         let mut sessions = self
@@ -671,11 +673,16 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
                 })
             })
             .collect::<Vec<_>>();
-        session.llm_messages.push(serde_json::json!({
+        let mut assistant_message = serde_json::json!({
             "role": "assistant",
             "content": if content.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(content.into()) },
             "tool_calls": tool_calls
-        }));
+        });
+        if !reasoning_content.is_empty() {
+            assistant_message["reasoning_content"] =
+                serde_json::Value::String(reasoning_content.into());
+        }
+        session.llm_messages.push(assistant_message);
     }
 
     fn append_tool_result(&self, session_id: &str, tool_call_id: &str, result: &str) {
@@ -1077,6 +1084,7 @@ mod tests {
             |_messages, _tools, _on_token| {
                 Ok(super::llm::AssistantLlmResponse {
                     content: "world".into(),
+                    reasoning_content: String::new(),
                     tool_calls: Vec::new(),
                 })
             },
@@ -1130,6 +1138,7 @@ mod tests {
                 on_token("Hello");
                 Ok(super::llm::AssistantLlmResponse {
                     content: "Hello".into(),
+                    reasoning_content: String::new(),
                     tool_calls: Vec::new(),
                 })
             },
@@ -1160,6 +1169,7 @@ mod tests {
                 if rounds == 1 {
                     Ok(super::llm::AssistantLlmResponse {
                         content: String::new(),
+                        reasoning_content: String::new(),
                         tool_calls: vec![super::llm::AssistantToolCall {
                             id: "todo_1".into(),
                             name: "todo_write".into(),
@@ -1173,6 +1183,7 @@ mod tests {
                 } else {
                     Ok(super::llm::AssistantLlmResponse {
                         content: "Ready".into(),
+                        reasoning_content: String::new(),
                         tool_calls: Vec::new(),
                     })
                 }
@@ -1182,6 +1193,61 @@ mod tests {
         let events = emitter.events.lock().unwrap();
         assert!(events.iter().any(|event| event.event_type == "todo_update"));
         assert_eq!(events.last().unwrap().event_type, "done");
+    }
+
+    #[test]
+    fn tool_call_history_preserves_reasoning_content() {
+        let registry = super::AgentRegistry::new_for_tests(VecEmitter::default());
+        let settings = crate::config::default_llm_settings();
+        let project_root = tempfile::tempdir().unwrap();
+        let summary_root = tempfile::tempdir().unwrap();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let captured_messages = Arc::clone(&captured);
+        let mut rounds = 0;
+
+        registry.run_with_llm_for_tests(
+            "session-1",
+            project_root.path().to_path_buf(),
+            summary_root.path().to_path_buf(),
+            settings,
+            "plan",
+            move |messages, _tools, _on_token| {
+                rounds += 1;
+                if rounds == 1 {
+                    Ok(super::llm::AssistantLlmResponse {
+                        content: String::new(),
+                        reasoning_content: "Need to update the todo list.".into(),
+                        tool_calls: vec![super::llm::AssistantToolCall {
+                            id: "todo_1".into(),
+                            name: "todo_write".into(),
+                            arguments: serde_json::json!({
+                                "todos": [
+                                    {"content": "Check DeepSeek tool calls", "active_form": "Checking DeepSeek tool calls", "status": "in_progress"}
+                                ]
+                            }),
+                        }],
+                    })
+                } else {
+                    *captured_messages.lock().unwrap() = messages;
+                    Ok(super::llm::AssistantLlmResponse {
+                        content: "Done".into(),
+                        reasoning_content: String::new(),
+                        tool_calls: Vec::new(),
+                    })
+                }
+            },
+        );
+
+        let messages = captured.lock().unwrap();
+        let assistant_tool_message = messages
+            .iter()
+            .find(|message| message.get("tool_calls").is_some())
+            .unwrap();
+
+        assert_eq!(
+            assistant_tool_message["reasoning_content"],
+            "Need to update the todo list."
+        );
     }
 
     #[test]
@@ -1202,6 +1268,7 @@ mod tests {
                 stop_registry.stop_run("session-1");
                 Ok(super::llm::AssistantLlmResponse {
                     content: String::new(),
+                    reasoning_content: String::new(),
                     tool_calls: vec![super::llm::AssistantToolCall {
                         id: "call_read".into(),
                         name: "read_file".into(),
@@ -1223,6 +1290,7 @@ mod tests {
                 *captured_messages.lock().unwrap() = messages;
                 Ok(super::llm::AssistantLlmResponse {
                     content: "ok".into(),
+                    reasoning_content: String::new(),
                     tool_calls: Vec::new(),
                 })
             },
@@ -1257,6 +1325,7 @@ mod tests {
                     .to_string();
                 Ok(super::llm::AssistantLlmResponse {
                     content: "ok".into(),
+                    reasoning_content: String::new(),
                     tool_calls: Vec::new(),
                 })
             },
