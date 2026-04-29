@@ -47,7 +47,7 @@ type ApiWithReviewQueue = typeof api & {
     sessionId: string,
     projectSlug: string,
     timeline: unknown,
-  ) => Promise<import("./types").TaskRecord>;
+  ) => Promise<{ jobId: number; total: number }>;
   loadAgentSession: (projectSlug: string, taskSlug: string) => Promise<import("./agentTypes").SavedAgentSession>;
 };
 
@@ -1800,15 +1800,35 @@ describe("assistant drawer", () => {
     } as AppState;
     vi.spyOn(api, "getAppState").mockResolvedValue(reviewedState);
     vi.spyOn(api as ApiWithReviewQueue, "getCachedAppState").mockResolvedValue(reviewedState);
+    const savedJobState = {
+      ...reviewedState,
+      jobs: [
+        {
+          id: 42,
+          kind: "save_agent_session",
+          scope: "assistant_session_save",
+          sessionId: "drawer-session",
+          projectSlug: "KittyNest",
+          taskSlug: null,
+          updatedAfter: null,
+          status: "queued",
+          total: 1,
+          completed: 0,
+          failed: 0,
+          pending: 1,
+          message: "Queued for analysis",
+          startedAt: "2026-04-28T08:00:00Z",
+          updatedAt: "2026-04-28T08:00:00Z",
+          completedAt: null,
+        },
+      ],
+    } as AppState;
     const saveAgentSession = vi
       .spyOn(api as ApiWithReviewQueue, "saveAgentSession")
-      .mockResolvedValue({
-        ...state.tasks[0],
-        status: "discussing",
-        createdAt: "2026-04-28T08:00:00Z",
-        descriptionPath: "/Users/kc/.kittynest/projects/KittyNest/tasks/save-drawer/description.md",
-        sessionPath: "/Users/kc/.kittynest/projects/KittyNest/tasks/save-drawer/session.json",
-      });
+      .mockResolvedValue({ jobId: 42, total: 1 });
+    const getCachedState = vi
+      .spyOn(api as ApiWithReviewQueue, "getCachedAppState")
+      .mockResolvedValue(savedJobState);
 
     render(<App />);
 
@@ -1827,6 +1847,7 @@ describe("assistant drawer", () => {
       version: 1,
       projectSlug: "KittyNest",
     });
+    await waitFor(() => expect(getCachedState).toHaveBeenCalled());
   });
 
   it("keeps finished thinking and tool cards expandable in the chat", async () => {
@@ -1863,7 +1884,8 @@ describe("assistant drawer", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /thinking/i }));
     expect(screen.getAllByText(/finished reasoning/i).length).toBeGreaterThan(1);
-    await userEvent.click(screen.getByRole("button", { name: /read_file done/i }));
+    expect(screen.queryByRole("button", { name: /read_file done/i })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /^read_file$/i }));
     expect(screen.getByText(/import React/i)).toBeInTheDocument();
   });
 
@@ -1907,7 +1929,7 @@ describe("assistant drawer", () => {
     });
 
     expect(screen.getAllByRole("button", { name: /thinking/i })).toHaveLength(1);
-    expect(screen.getAllByRole("button", { name: /read_file done/i })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /^read_file$/i })).toHaveLength(1);
     expect(screen.getAllByText("Hello")).toHaveLength(1);
   });
 
@@ -1970,7 +1992,7 @@ describe("assistant drawer", () => {
     expect(screen.getByText(/late result/i)).toBeInTheDocument();
   });
 
-  it("shows only the tool name and status while collapsed", async () => {
+  it("shows only the tool name while collapsed", async () => {
     vi.spyOn(api, "getAppState").mockResolvedValue({
       ...state,
       projects: [{ ...state.projects[0], reviewStatus: "reviewed" }],
@@ -1991,7 +2013,8 @@ describe("assistant drawer", () => {
       });
     });
 
-    expect(screen.getByRole("button", { name: /^read_file running$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^read_file$/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /running/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /src\/app\.tsx/i })).not.toBeInTheDocument();
   });
 

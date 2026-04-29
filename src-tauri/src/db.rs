@@ -700,6 +700,38 @@ pub fn enqueue_scan_sources(connection: &rusqlite::Connection) -> anyhow::Result
     )
 }
 
+pub fn prepare_save_agent_session_job(
+    connection: &rusqlite::Connection,
+    session_id: &str,
+    project_slug: &str,
+) -> anyhow::Result<EnqueueJobResult> {
+    let now = crate::utils::now_rfc3339();
+    connection.execute(
+        r#"
+        INSERT INTO jobs
+          (kind, scope, session_id, project_slug, task_slug, updated_after, status, total, completed, failed, message, started_at, updated_at)
+        VALUES ('save_agent_session', 'assistant_session_save', ?1, ?2, NULL, NULL, 'preparing', 1, 0, 0, 'Preparing assistant session save', ?3, ?3)
+        "#,
+        params![session_id, project_slug, now],
+    )?;
+    Ok(EnqueueJobResult {
+        job_id: connection.last_insert_rowid(),
+        total: 1,
+    })
+}
+
+pub fn queue_prepared_job(connection: &rusqlite::Connection, job_id: i64) -> anyhow::Result<()> {
+    connection.execute(
+        r#"
+        UPDATE jobs
+        SET status = 'queued', message = 'Queued for analysis', updated_at = ?1
+        WHERE id = ?2 AND status = 'preparing'
+        "#,
+        params![crate::utils::now_rfc3339(), job_id],
+    )?;
+    Ok(())
+}
+
 pub fn enqueue_generate_task_prompt(
     connection: &rusqlite::Connection,
     project_slug: &str,

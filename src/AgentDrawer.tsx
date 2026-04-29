@@ -657,7 +657,7 @@ function AgentMessageView({
         <button onClick={onToggle}>
           {message.role === "tool" && <Wrench size={14} />}
           <strong>{title}</strong>
-          <span>{message.role === "tool" ? message.status : message.content || message.status}</span>
+          {message.role === "thinking" && <span>{message.content || message.status}</span>}
           {message.expanded ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
         </button>
         {message.expanded && (

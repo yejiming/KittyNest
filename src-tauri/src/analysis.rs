@@ -81,6 +81,31 @@ pub fn run_next_analysis_job(paths: &AppPaths) -> anyhow::Result<bool> {
         return Ok(true);
     }
 
+    if job.kind == "save_agent_session" {
+        let Some(project_slug) = job.project_slug.as_deref() else {
+            crate::db::fail_job(&connection, job.id, "Assistant session save job has no project slug")?;
+            return Ok(true);
+        };
+        let Some(session_id) = job.session_id.as_deref() else {
+            crate::db::fail_job(&connection, job.id, "Assistant session save job has no session id")?;
+            return Ok(true);
+        };
+        match crate::commands::run_save_agent_session_job(paths, job.id, session_id, project_slug) {
+            Ok(_) => {
+                crate::db::update_job_progress(&connection, job.id, 1, 0, "Assistant session saved")?;
+                crate::db::complete_job(&connection, job.id, "Assistant session saved")?;
+            }
+            Err(error) => {
+                crate::db::fail_job(
+                    &connection,
+                    job.id,
+                    &format!("Assistant session save failed: {error}"),
+                )?;
+            }
+        }
+        return Ok(true);
+    }
+
     if job.kind == "review_project" {
         let Some(project_slug) = job.project_slug.as_deref() else {
             crate::db::fail_job(

@@ -11,7 +11,6 @@ import type {
   MemorySearchRecord,
   ScanResult,
   SessionMemoryDetail,
-  TaskRecord,
 } from "./types";
 import { normalizeAgentContext, type SavedAgentSession } from "./agentTypes";
 
@@ -243,23 +242,11 @@ export async function saveAgentSession(
   sessionId: string,
   projectSlug: string,
   timeline: unknown,
-): Promise<TaskRecord> {
+): Promise<EnqueueJobResult> {
   if (!isTauriRuntime()) {
-    return {
-      projectSlug,
-      slug: "saved-session",
-      title: "Saved Session",
-      brief: "Saved assistant session",
-      status: "discussing",
-      summaryPath: "",
-      descriptionPath: "",
-      sessionPath: "",
-      sessionCount: 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
+    return { jobId: 1, total: 1 };
   }
-  return invoke<TaskRecord>("save_agent_session", { sessionId, projectSlug, timeline });
+  return invoke<EnqueueJobResult>("save_agent_session", { sessionId, projectSlug, timeline });
 }
 
 export async function loadAgentSession(projectSlug: string, taskSlug: string): Promise<SavedAgentSession> {

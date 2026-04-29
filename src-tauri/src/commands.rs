@@ -32,6 +32,16 @@ pub(crate) struct TaskMetadataDraft {
     pub task_description: String,
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QueuedAgentSessionSavePayload {
+    version: usize,
+    session_id: String,
+    project_slug: String,
+    timeline: crate::models::AgentTimelinePayload,
+    llm_messages: Vec<serde_json::Value>,
+}
+
 pub(crate) fn parse_task_metadata_json(content: &str) -> anyhow::Result<TaskMetadataDraft> {
     let value: serde_json::Value = serde_json::from_str(content.trim())?;
     let task_description = value
@@ -329,8 +339,15 @@ pub fn save_agent_session(
     timeline: crate::models::AgentTimelinePayload,
     services: State<'_, AppServices>,
 ) -> CommandResult<serde_json::Value> {
-    save_agent_session_inner(app, &services.paths, &session_id, &project_slug, timeline)
-        .map(|task| serde_json::to_value(task).unwrap_or_else(|_| serde_json::json!({})))
+    let snapshot = assistant_registry(app).session_export(&session_id);
+    enqueue_save_agent_session_inner(
+        &services.paths,
+        &session_id,
+        &project_slug,
+        timeline,
+        snapshot.llm_messages,
+    )
+        .map(|result| serde_json::json!({ "jobId": result.job_id, "total": result.total }))
         .map_err(to_command_error)
 }
 
@@ -635,13 +652,67 @@ pub(crate) fn assistant_project_paths(
     Ok((std::path::PathBuf::from(project.workdir), summary_root))
 }
 
-fn save_agent_session_inner(
-    app: tauri::AppHandle,
+pub(crate) fn enqueue_save_agent_session_inner(
     paths: &crate::models::AppPaths,
     session_id: &str,
     project_slug: &str,
     timeline: crate::models::AgentTimelinePayload,
+    llm_messages: Vec<serde_json::Value>,
+) -> anyhow::Result<crate::models::EnqueueJobResult> {
+    let connection = crate::db::open(paths)?;
+    crate::db::migrate(&connection)?;
+    let (_, project) = crate::db::get_project_by_slug(&connection, project_slug)?
+        .ok_or_else(|| anyhow::anyhow!("Project not found: {project_slug}"))?;
+    if project.review_status != "reviewed" {
+        anyhow::bail!("Task Assistant requires a reviewed project");
+    }
+    let job = crate::db::prepare_save_agent_session_job(&connection, session_id, project_slug)?;
+    let payload = QueuedAgentSessionSavePayload {
+        version: 1,
+        session_id: session_id.to_string(),
+        project_slug: project.slug,
+        timeline,
+        llm_messages,
+    };
+    let payload_path = save_agent_session_payload_path(paths, job.job_id);
+    if let Some(parent) = payload_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if let Err(error) = std::fs::write(&payload_path, serde_json::to_string_pretty(&payload)?) {
+        let _ = crate::db::fail_job(&connection, job.job_id, &format!("Assistant session save failed: {error}"));
+        return Err(error.into());
+    }
+    crate::db::queue_prepared_job(&connection, job.job_id)?;
+    Ok(job)
+}
+
+pub(crate) fn run_save_agent_session_job(
+    paths: &crate::models::AppPaths,
+    job_id: i64,
+    session_id: &str,
+    project_slug: &str,
 ) -> anyhow::Result<crate::models::TaskRecord> {
+    run_save_agent_session_job_with_metadata(paths, job_id, session_id, project_slug, |settings, messages| {
+        crate::assistant::llm::request_openai_json(settings, messages)
+    })
+}
+
+fn run_save_agent_session_job_with_metadata<F>(
+    paths: &crate::models::AppPaths,
+    job_id: i64,
+    session_id: &str,
+    project_slug: &str,
+    request_metadata: F,
+) -> anyhow::Result<crate::models::TaskRecord>
+where
+    F: FnOnce(&crate::models::LlmSettings, Vec<serde_json::Value>) -> anyhow::Result<String>,
+{
+    let payload_path = save_agent_session_payload_path(paths, job_id);
+    let payload: QueuedAgentSessionSavePayload =
+        serde_json::from_str(&std::fs::read_to_string(&payload_path)?)?;
+    if payload.session_id != session_id || payload.project_slug != project_slug {
+        anyhow::bail!("Assistant session save payload does not match queued job");
+    }
     let connection = crate::db::open(paths)?;
     crate::db::migrate(&connection)?;
     let (project_id, project) = crate::db::get_project_by_slug(&connection, project_slug)?
@@ -653,7 +724,7 @@ fn save_agent_session_inner(
         &crate::config::read_llm_settings(paths)?,
         crate::config::LlmScenario::Assistant,
     );
-    let raw = crate::assistant::llm::request_openai_json(&settings, task_metadata_messages(&timeline))?;
+    let raw = request_metadata(&settings, task_metadata_messages(&payload.timeline))?;
     crate::db::record_llm_provider_call_for_paths(paths, &settings.provider);
     let draft = parse_task_metadata_json(&raw)?;
     let task_slug =
@@ -667,17 +738,16 @@ fn save_agent_session_inner(
     let description_path = task_dir.join("description.md");
     let session_path = task_dir.join("session.json");
     std::fs::write(&description_path, format!("{}\n", draft.task_description))?;
-    let snapshot = assistant_registry(app).session_export(session_id);
     let saved = crate::models::SavedAgentSessionPayload {
         version: 1,
         session_id: session_id.to_string(),
         project_slug: project.slug.clone(),
         project_root: project.workdir.clone(),
         created_at: crate::utils::now_rfc3339(),
-        messages: timeline.messages,
-        todos: timeline.todos,
-        context: timeline.context,
-        llm_messages: snapshot.llm_messages,
+        messages: payload.timeline.messages,
+        todos: payload.timeline.todos,
+        context: payload.timeline.context,
+        llm_messages: payload.llm_messages,
     };
     std::fs::write(&session_path, serde_json::to_string_pretty(&saved)?)?;
     crate::db::upsert_task(
@@ -693,6 +763,17 @@ fn save_agent_session_inner(
         .into_iter()
         .find(|task| task.project_slug == project.slug && task.slug == task_slug)
         .ok_or_else(|| anyhow::anyhow!("saved task not found after create"))
+}
+
+pub(crate) fn save_agent_session_payload_path(
+    paths: &crate::models::AppPaths,
+    job_id: i64,
+) -> std::path::PathBuf {
+    paths
+        .data_dir
+        .join("jobs")
+        .join(job_id.to_string())
+        .join("agent_session.json")
 }
 
 fn load_agent_session_inner(
@@ -1025,6 +1106,134 @@ mod tests {
         assert_eq!(code_root, project_dir);
         assert_eq!(summary_root, paths.projects_dir.join("app"));
         assert!(summary_root.exists());
+    }
+
+    #[test]
+    fn save_agent_session_enqueue_writes_payload_job_without_generating_task() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
+        crate::config::initialize_workspace(&paths).unwrap();
+        let mut connection = crate::db::open(&paths).unwrap();
+        crate::db::migrate(&connection).unwrap();
+        let project_dir = temp.path().join("app");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        crate::db::upsert_raw_sessions(
+            &mut connection,
+            &[RawSession {
+                source: "codex".into(),
+                session_id: "save-agent-session".into(),
+                workdir: project_dir.to_string_lossy().to_string(),
+                created_at: "2026-04-28T00:00:00Z".into(),
+                updated_at: "2026-04-28T00:00:01Z".into(),
+                raw_path: temp.path().join("session.jsonl").to_string_lossy().to_string(),
+                messages: vec![RawMessage {
+                    role: "user".into(),
+                    content: "hello".into(),
+                }],
+            }],
+        )
+        .unwrap();
+        let (project_id, _) = crate::db::get_project_by_slug(&connection, "app")
+            .unwrap()
+            .unwrap();
+        crate::db::update_project_review(&connection, project_id, "/tmp/info.md").unwrap();
+        let timeline = crate::models::AgentTimelinePayload {
+            version: 1,
+            session_id: "drawer-session".into(),
+            project_slug: "app".into(),
+            messages: vec![serde_json::json!({"role": "user", "content": "Save this"})],
+            todos: Vec::new(),
+            context: serde_json::json!({}),
+        };
+
+        let result = super::enqueue_save_agent_session_inner(
+            &paths,
+            "drawer-session",
+            "app",
+            timeline,
+            vec![serde_json::json!({"role": "user", "content": "Save this"})],
+        )
+        .unwrap();
+
+        let jobs = crate::db::list_active_jobs(&connection).unwrap();
+        assert_eq!(result.total, 1);
+        assert_eq!(jobs[0].kind, "save_agent_session");
+        assert_eq!(jobs[0].session_id.as_deref(), Some("drawer-session"));
+        assert_eq!(jobs[0].project_slug.as_deref(), Some("app"));
+        let payload_path = super::save_agent_session_payload_path(&paths, result.job_id);
+        let payload: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(payload_path).unwrap()).unwrap();
+        assert_eq!(payload["llmMessages"][0]["content"], "Save this");
+        assert!(crate::db::list_tasks(&connection).unwrap().is_empty());
+    }
+
+    #[test]
+    fn save_agent_session_job_writes_task_and_saved_session_payload() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
+        crate::config::initialize_workspace(&paths).unwrap();
+        let mut connection = crate::db::open(&paths).unwrap();
+        crate::db::migrate(&connection).unwrap();
+        let project_dir = temp.path().join("app");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        crate::db::upsert_raw_sessions(
+            &mut connection,
+            &[RawSession {
+                source: "codex".into(),
+                session_id: "save-agent-session-job".into(),
+                workdir: project_dir.to_string_lossy().to_string(),
+                created_at: "2026-04-28T00:00:00Z".into(),
+                updated_at: "2026-04-28T00:00:01Z".into(),
+                raw_path: temp.path().join("session.jsonl").to_string_lossy().to_string(),
+                messages: vec![RawMessage {
+                    role: "user".into(),
+                    content: "hello".into(),
+                }],
+            }],
+        )
+        .unwrap();
+        let (project_id, _) = crate::db::get_project_by_slug(&connection, "app")
+            .unwrap()
+            .unwrap();
+        crate::db::update_project_review(&connection, project_id, "/tmp/info.md").unwrap();
+        let timeline = crate::models::AgentTimelinePayload {
+            version: 1,
+            session_id: "drawer-session".into(),
+            project_slug: "app".into(),
+            messages: vec![
+                serde_json::json!({"role": "user", "content": "Save this"}),
+                serde_json::json!({"role": "assistant", "content": "Saved answer"}),
+            ],
+            todos: Vec::new(),
+            context: serde_json::json!({"usedTokens": 12}),
+        };
+        let job = super::enqueue_save_agent_session_inner(
+            &paths,
+            "drawer-session",
+            "app",
+            timeline,
+            vec![serde_json::json!({"role": "assistant", "content": "Saved answer"})],
+        )
+        .unwrap();
+
+        let task = super::run_save_agent_session_job_with_metadata(
+            &paths,
+            job.job_id,
+            "drawer-session",
+            "app",
+            |_settings, _messages| {
+                Ok(r#"{"task_name":"Saved Drawer","task_description":"Persisted **Drawer** session."}"#.into())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(task.slug, "saved-drawer");
+        assert_eq!(task.status, "discussing");
+        let session_path = task.session_path.as_deref().unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(session_path).unwrap()).unwrap();
+        assert_eq!(saved["llmMessages"][0]["content"], "Saved answer");
+        assert_eq!(saved["context"]["usedTokens"], 12);
     }
 
     #[test]
