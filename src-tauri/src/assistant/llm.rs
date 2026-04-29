@@ -55,10 +55,15 @@ fn is_deepseek(settings: &crate::models::LlmSettings) -> bool {
     settings.provider.trim().eq_ignore_ascii_case("DeepSeek")
 }
 
-pub fn parse_openai_sse<R, F>(reader: R, mut on_token: F) -> anyhow::Result<AssistantLlmResponse>
+pub fn parse_openai_sse<R, F, G>(
+    reader: R,
+    mut on_token: F,
+    mut on_reasoning: G,
+) -> anyhow::Result<AssistantLlmResponse>
 where
     R: Read,
     F: FnMut(&str),
+    G: FnMut(&str),
 {
     let mut content = String::new();
     let mut reasoning_content = String::new();
@@ -89,6 +94,7 @@ where
             .and_then(serde_json::Value::as_str)
         {
             reasoning_content.push_str(reasoning);
+            on_reasoning(reasoning);
         }
         let Some(tool_calls) = delta
             .get("tool_calls")
@@ -145,23 +151,33 @@ pub fn request_openai_stream<F>(
     messages: Vec<serde_json::Value>,
     tools: Vec<serde_json::Value>,
     on_token: F,
+    on_reasoning: impl FnMut(&str),
 ) -> anyhow::Result<AssistantLlmResponse>
 where
     F: FnMut(&str),
 {
     let paths = crate::config::default_paths();
-    request_openai_stream_with_log_dir(settings, messages, tools, on_token, &paths.data_dir)
+    request_openai_stream_with_log_dir(
+        settings,
+        messages,
+        tools,
+        on_token,
+        on_reasoning,
+        &paths.data_dir,
+    )
 }
 
-fn request_openai_stream_with_log_dir<F>(
+fn request_openai_stream_with_log_dir<F, G>(
     settings: &crate::models::LlmSettings,
     messages: Vec<serde_json::Value>,
     tools: Vec<serde_json::Value>,
     on_token: F,
+    on_reasoning: G,
     log_data_dir: &std::path::Path,
 ) -> anyhow::Result<AssistantLlmResponse>
 where
     F: FnMut(&str),
+    G: FnMut(&str),
 {
     if settings.interface != "openai" {
         anyhow::bail!("Task Assistant currently requires an OpenAI-compatible Assistant model");
@@ -186,7 +202,7 @@ where
         log_http_error(settings, &endpoint, status, &body, &response_body, log_data_dir);
         anyhow::bail!("HTTP status {status} for url ({endpoint})");
     }
-    parse_openai_sse(response, on_token)
+    parse_openai_sse(response, on_token, on_reasoning)
 }
 
 fn log_http_error(
@@ -271,10 +287,15 @@ mod tests {
             "data: [DONE]\n\n"
         );
 
-        let response = super::parse_openai_sse(input.as_bytes(), |_| {}).unwrap();
+        let mut reasoning_chunks = Vec::new();
+        let response = super::parse_openai_sse(input.as_bytes(), |_| {}, |chunk| {
+            reasoning_chunks.push(chunk.to_string());
+        })
+        .unwrap();
 
         assert_eq!(response.content, "Hi ");
         assert_eq!(response.reasoning_content, "Need to inspect the file.");
+        assert_eq!(reasoning_chunks, vec!["Need to inspect ", "the file."]);
         assert_eq!(response.tool_calls.len(), 1);
         assert_eq!(response.tool_calls[0].id, "call_1");
         assert_eq!(response.tool_calls[0].name, "read_file");
@@ -349,6 +370,7 @@ mod tests {
             &settings,
             vec![serde_json::json!({"role": "user", "content": "hello"})],
             vec![serde_json::json!({"type": "function", "function": {"name": "read_file", "parameters": {"type": "object"}}})],
+            |_| {},
             |_| {},
             temp.path(),
         )

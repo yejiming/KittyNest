@@ -371,6 +371,7 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
             Vec<serde_json::Value>,
             Vec<serde_json::Value>,
             &mut dyn FnMut(&str),
+            &mut dyn FnMut(&str),
         ) -> anyhow::Result<llm::AssistantLlmResponse>,
     {
         if let Err(error) = self.run_inner(
@@ -402,10 +403,14 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
                 project_summary_root,
                 settings,
                 &message,
-                move |messages, tools, on_token| {
-                    llm::request_openai_stream(&request_settings, messages, tools, |token| {
-                        on_token(token)
-                    })
+                move |messages, tools, on_token, on_reasoning| {
+                    llm::request_openai_stream(
+                        &request_settings,
+                        messages,
+                        tools,
+                        |token| on_token(token),
+                        |reasoning| on_reasoning(reasoning),
+                    )
                 },
             );
         });
@@ -424,6 +429,7 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
         F: FnMut(
             Vec<serde_json::Value>,
             Vec<serde_json::Value>,
+            &mut dyn FnMut(&str),
             &mut dyn FnMut(&str),
         ) -> anyhow::Result<llm::AssistantLlmResponse>,
     {
@@ -449,6 +455,9 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
             let mut think_filter = ThinkBlockStreamFilter::default();
             let token_registry = self.clone();
             let token_session_id = session_id.to_string();
+            let mut reasoning_started = false;
+            let reasoning_registry = self.clone();
+            let reasoning_session_id = session_id.to_string();
             let mut on_token = |token: &str| {
                 for event in think_filter.consume(token) {
                     match event {
@@ -471,7 +480,19 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
                 }
             };
 
-            let response = llm(messages, tools, &mut on_token)?;
+            let response = {
+                let mut on_reasoning = |delta: &str| {
+                    if delta.is_empty() {
+                        return;
+                    }
+                    if !reasoning_started {
+                        reasoning_registry.emit_thinking_status(&reasoning_session_id, "running");
+                        reasoning_started = true;
+                    }
+                    reasoning_registry.emit_thinking_delta(&reasoning_session_id, delta);
+                };
+                llm(messages, tools, &mut on_token, &mut on_reasoning)?
+            };
             if !self.is_current_run(session_id, run_id) {
                 return Ok(());
             }
@@ -483,6 +504,14 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
                 let mut payload = AgentEvent::new(session_id, "thinking_status");
                 payload.status = Some("finished".into());
                 self.emit(payload);
+            }
+            if !reasoning_started && !response.reasoning_content.is_empty() {
+                self.emit_thinking_status(session_id, "running");
+                self.emit_thinking_delta(session_id, &response.reasoning_content);
+                reasoning_started = true;
+            }
+            if reasoning_started {
+                self.emit_thinking_status(session_id, "finished");
             }
 
             if response.tool_calls.is_empty() {
@@ -887,6 +916,18 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
         self.emit(payload);
     }
 
+    fn emit_thinking_status(&self, session_id: &str, status: &str) {
+        let mut payload = AgentEvent::new(session_id, "thinking_status");
+        payload.status = Some(status.into());
+        self.emit(payload);
+    }
+
+    fn emit_thinking_delta(&self, session_id: &str, delta: &str) {
+        let mut payload = AgentEvent::new(session_id, "thinking_delta");
+        payload.delta = Some(delta.into());
+        self.emit(payload);
+    }
+
     fn context_value(
         &self,
         session_id: &str,
@@ -1081,7 +1122,7 @@ mod tests {
             summary_root.path().to_path_buf(),
             settings,
             "hello",
-            |_messages, _tools, _on_token| {
+            |_messages, _tools, _on_token, _on_reasoning| {
                 Ok(super::llm::AssistantLlmResponse {
                     content: "world".into(),
                     reasoning_content: String::new(),
@@ -1134,7 +1175,7 @@ mod tests {
             summary_root.path().to_path_buf(),
             settings,
             "hello",
-            |_messages, _tools, on_token| {
+            |_messages, _tools, on_token, _on_reasoning| {
                 on_token("Hello");
                 Ok(super::llm::AssistantLlmResponse {
                     content: "Hello".into(),
@@ -1164,7 +1205,7 @@ mod tests {
             summary_root.path().to_path_buf(),
             settings,
             "plan",
-            |_messages, _tools, _on_token| {
+            |_messages, _tools, _on_token, _on_reasoning| {
                 rounds += 1;
                 if rounds == 1 {
                     Ok(super::llm::AssistantLlmResponse {
@@ -1211,7 +1252,7 @@ mod tests {
             summary_root.path().to_path_buf(),
             settings,
             "plan",
-            move |messages, _tools, _on_token| {
+            move |messages, _tools, _on_token, _on_reasoning| {
                 rounds += 1;
                 if rounds == 1 {
                     Ok(super::llm::AssistantLlmResponse {
@@ -1251,6 +1292,48 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_content_streams_as_thinking_events() {
+        let emitter = VecEmitter::default();
+        let registry = super::AgentRegistry::new_for_tests(emitter.clone());
+        let settings = crate::config::default_llm_settings();
+        let project_root = tempfile::tempdir().unwrap();
+        let summary_root = tempfile::tempdir().unwrap();
+
+        registry.run_with_llm_for_tests(
+            "session-1",
+            project_root.path().to_path_buf(),
+            summary_root.path().to_path_buf(),
+            settings,
+            "think",
+            |_messages, _tools, on_token, on_reasoning| {
+                on_reasoning("DeepSeek reasoning");
+                on_token("Visible answer");
+                Ok(super::llm::AssistantLlmResponse {
+                    content: "Visible answer".into(),
+                    reasoning_content: "DeepSeek reasoning".into(),
+                    tool_calls: Vec::new(),
+                })
+            },
+        );
+
+        let events = emitter.events.lock().unwrap();
+        let thinking_events = events
+            .iter()
+            .filter(|event| event.event_type.starts_with("thinking"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(thinking_events[0].event_type, "thinking_status");
+        assert_eq!(thinking_events[0].status.as_deref(), Some("running"));
+        assert_eq!(thinking_events[1].event_type, "thinking_delta");
+        assert_eq!(
+            thinking_events[1].delta.as_deref(),
+            Some("DeepSeek reasoning")
+        );
+        assert_eq!(thinking_events[2].event_type, "thinking_status");
+        assert_eq!(thinking_events[2].status.as_deref(), Some("finished"));
+    }
+
+    #[test]
     fn stopped_tool_call_turn_is_removed_before_next_user_message() {
         let registry = super::AgentRegistry::new_for_tests(VecEmitter::default());
         let settings = crate::config::default_llm_settings();
@@ -1264,7 +1347,7 @@ mod tests {
             summary_root.path().to_path_buf(),
             settings.clone(),
             "read a file",
-            move |_messages, _tools, _on_token| {
+            move |_messages, _tools, _on_token, _on_reasoning| {
                 stop_registry.stop_run("session-1");
                 Ok(super::llm::AssistantLlmResponse {
                     content: String::new(),
@@ -1286,7 +1369,7 @@ mod tests {
             summary_root.path().to_path_buf(),
             settings,
             "try again",
-            move |messages, _tools, _on_token| {
+            move |messages, _tools, _on_token, _on_reasoning| {
                 *captured_messages.lock().unwrap() = messages;
                 Ok(super::llm::AssistantLlmResponse {
                     content: "ok".into(),
@@ -1318,7 +1401,7 @@ mod tests {
             summary_root.path().to_path_buf(),
             settings,
             "hello",
-            move |messages, _tools, _on_token| {
+            move |messages, _tools, _on_token, _on_reasoning| {
                 *captured_prompt.lock().unwrap() = messages[0]["content"]
                     .as_str()
                     .unwrap_or_default()
