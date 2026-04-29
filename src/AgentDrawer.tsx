@@ -658,8 +658,10 @@ function AgentMessageView({
       <article className={`agent-fold-card ${message.role}`}>
         <button onClick={onToggle}>
           {message.role === "tool" && <Wrench size={14} />}
-          <strong>{title}</strong>
-          {message.role === "thinking" && <span>{message.content || message.status}</span>}
+          <strong className="agent-fold-title">{title}</strong>
+          {message.role === "thinking" && (
+            <span className="agent-fold-summary">{message.content || message.status}</span>
+          )}
           {message.expanded
             ? <ChevronDown className="agent-fold-chevron" size={14} />
             : <ChevronUp className="agent-fold-chevron" size={14} />}

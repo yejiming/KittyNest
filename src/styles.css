@@ -1835,7 +1835,7 @@ select {
   width: 100%;
 }
 
-.agent-fold-card > button strong {
+.agent-fold-title {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
@@ -1851,15 +1851,16 @@ select {
   margin-left: auto;
 }
 
-.agent-fold-card.thinking > button strong {
+.agent-fold-card.thinking .agent-fold-title {
   color: #bda8ff;
+  flex: 0 0 auto;
 }
 
-.agent-fold-card.tool > button strong {
+.agent-fold-card.tool .agent-fold-title {
   color: #7fff5e;
 }
 
-.agent-fold-card > button span {
+.agent-fold-summary {
   color: #89aeb3;
   flex: 1 1 auto;
   min-width: 0;

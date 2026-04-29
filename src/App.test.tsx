@@ -2055,6 +2055,33 @@ describe("assistant drawer", () => {
     expect(toolButton.querySelector(".agent-fold-chevron")).not.toBeNull();
   });
 
+  it("keeps the thinking title separate from long thinking text", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue({
+      ...state,
+      projects: [{ ...state.projects[0], reviewStatus: "reviewed" }],
+    });
+
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: /^assistant$/i }));
+    const sessionId = window.sessionStorage.getItem("kittynest:agent-session") ?? "";
+
+    act(() => {
+      emitAgentEvent({ sessionId, type: "thinking_status", status: "running" });
+      emitAgentEvent({
+        sessionId,
+        type: "thinking_delta",
+        delta: "I am planning a very detailed multi-step architecture explanation that should truncate instead of pushing the title.",
+      });
+    });
+
+    const thinkingButton = screen.getByRole("button", { name: /thinking/i });
+    const title = thinkingButton.querySelector("strong");
+    const summary = thinkingButton.querySelector("span");
+    expect(title).toHaveTextContent("Thinking");
+    expect(title).toHaveClass("agent-fold-title");
+    expect(summary).toHaveClass("agent-fold-summary");
+  });
+
   it("resolves permission cards and removes them after selection", async () => {
     vi.spyOn(api, "getAppState").mockResolvedValue({
       ...state,
