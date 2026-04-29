@@ -2018,6 +2018,43 @@ describe("assistant drawer", () => {
     expect(screen.queryByRole("button", { name: /src\/app\.tsx/i })).not.toBeInTheDocument();
   });
 
+  it("keeps drawer assistant markdown and fold cards constrained to the chat width", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue({
+      ...state,
+      projects: [{ ...state.projects[0], reviewStatus: "reviewed" }],
+    });
+
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: /^assistant$/i }));
+    const sessionId = window.sessionStorage.getItem("kittynest:agent-session") ?? "";
+
+    act(() => {
+      emitAgentEvent({ sessionId, type: "thinking_status", status: "running" });
+      emitAgentEvent({
+        sessionId,
+        type: "tool_start",
+        toolCallId: "call_1",
+        name: "draw_architecture",
+      });
+      emitAgentEvent({
+        sessionId,
+        type: "done",
+        reply: "```text\nclient -> service -> database_with_a_very_long_identifier_that_should_not_escape_the_drawer\n```",
+      });
+    });
+
+    const assistantMessage = screen
+      .getByText(/database_with_a_very_long_identifier/i)
+      .closest(".agent-message.assistant");
+    const thinkingButton = screen.getByRole("button", { name: /thinking/i });
+    const toolButton = screen.getByRole("button", { name: /^draw_architecture$/i });
+    expect(assistantMessage?.querySelector(".markdown-body")).not.toBeNull();
+    expect(document.querySelector(".agent-fold-card.thinking")).not.toBeNull();
+    expect(document.querySelector(".agent-fold-card.tool")).not.toBeNull();
+    expect(thinkingButton.querySelector(".agent-fold-chevron")).not.toBeNull();
+    expect(toolButton.querySelector(".agent-fold-chevron")).not.toBeNull();
+  });
+
   it("resolves permission cards and removes them after selection", async () => {
     vi.spyOn(api, "getAppState").mockResolvedValue({
       ...state,

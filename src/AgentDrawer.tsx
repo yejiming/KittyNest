@@ -646,7 +646,9 @@ function AgentMessageView({
   if (message.role === "assistant") {
     return (
       <article className="agent-message assistant">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content ?? ""}</ReactMarkdown>
+        <div className="markdown-body">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content ?? ""}</ReactMarkdown>
+        </div>
       </article>
     );
   }
@@ -658,7 +660,9 @@ function AgentMessageView({
           {message.role === "tool" && <Wrench size={14} />}
           <strong>{title}</strong>
           {message.role === "thinking" && <span>{message.content || message.status}</span>}
-          {message.expanded ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+          {message.expanded
+            ? <ChevronDown className="agent-fold-chevron" size={14} />
+            : <ChevronUp className="agent-fold-chevron" size={14} />}
         </button>
         {message.expanded && (
           <pre>{message.role === "tool"
