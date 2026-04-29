@@ -56,12 +56,13 @@ interface AgentDrawerProps {
   open: boolean;
   projects: ProjectRecord[];
   loadedSession?: SavedAgentSession | null;
+  loadSignal?: number;
   refreshSignal?: number;
   onClose: () => void;
   onSaved?: () => void;
 }
 
-export function AgentDrawer({ open, projects, loadedSession, refreshSignal = 0, onClose, onSaved }: AgentDrawerProps) {
+export function AgentDrawer({ open, projects, loadedSession, loadSignal = 0, refreshSignal = 0, onClose, onSaved }: AgentDrawerProps) {
   const reviewedProjects = useMemo(
     () => projects.filter((project) => project.reviewStatus === "reviewed"),
     [projects],
@@ -100,7 +101,7 @@ export function AgentDrawer({ open, projects, loadedSession, refreshSignal = 0, 
     setSelectedProject(loadedSession.projectSlug);
     setInput("");
     setRunning(false);
-  }, [loadedSession]);
+  }, [loadedSession, loadSignal]);
 
   const handleAgentEvent = useCallback((event: AgentEvent) => {
     if (event.sessionId !== sessionId) return;

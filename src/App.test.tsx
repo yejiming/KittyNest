@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -808,6 +808,38 @@ describe("KittyNest dashboard", () => {
     expect(screen.getByText("SQLite stores local graph memory.")).toBeInTheDocument();
   });
 
+  it("opens memory search with empty results instead of hydrating the previous search", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue(state);
+    const getMemorySearch = vi.spyOn(api as ApiWithReviewQueue, "getMemorySearch").mockResolvedValue({
+      id: 1,
+      jobId: 77,
+      query: "sqlite",
+      status: "completed",
+      message: "1 memory found",
+      createdAt: "2026-04-27T00:00:00Z",
+      updatedAt: "2026-04-27T00:00:01Z",
+      results: [
+        {
+          sourceSession: "session-1",
+          sessionTitle: "Implement memory module",
+          projectSlug: "KittyNest",
+          memory: "SQLite stores local graph memory.",
+          ordinal: 0,
+        },
+      ],
+    });
+    const listMemoryEntities = vi.spyOn(api as ApiWithReviewQueue, "listMemoryEntities").mockResolvedValue([]);
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Dashboard" });
+    await userEvent.click(screen.getByRole("button", { name: "Memory" }));
+
+    await waitFor(() => expect(listMemoryEntities).toHaveBeenCalled());
+    expect(getMemorySearch).not.toHaveBeenCalled();
+    expect(screen.getByText("Search results will appear here.")).toBeInTheDocument();
+    expect(screen.queryByText("SQLite stores local graph memory.")).not.toBeInTheDocument();
+  });
+
   it("expands entity sessions and opens session detail", async () => {
     vi.spyOn(api, "getAppState").mockResolvedValue(state);
     vi.spyOn(api as ApiWithReviewQueue, "listMemoryEntities").mockResolvedValue([
@@ -915,6 +947,56 @@ describe("KittyNest dashboard", () => {
     await waitFor(() => expect(loadAgentSession).toHaveBeenCalledWith("KittyNest", "session-ingest"));
     expect(await screen.findByLabelText("Agent Assistant")).toHaveClass("open");
     expect(screen.getByText("planning")).toBeInTheDocument();
+  });
+
+  it("reloads the same saved task session after drawer messages change", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue({
+      ...state,
+      projects: [{ ...state.projects[0], reviewStatus: "reviewed" }],
+      tasks: [
+        {
+          ...state.tasks[0],
+          status: "discussing",
+          sessionCount: 0,
+          descriptionPath: "/Users/kc/.kittynest/projects/KittyNest/tasks/session-ingest/description.md",
+          sessionPath: "/Users/kc/.kittynest/projects/KittyNest/tasks/session-ingest/session.json",
+        },
+      ],
+      sessions: [],
+    });
+    vi.spyOn(api, "readMarkdownFile").mockResolvedValue({ content: "Build **Drawer Save**." });
+    vi.spyOn(api as ApiWithReviewQueue, "loadAgentSession").mockResolvedValue({
+      version: 1,
+      sessionId: "saved-session",
+      projectSlug: "KittyNest",
+      projectRoot: "/Users/kc/KittyNest",
+      createdAt: "2026-04-28T08:00:00Z",
+      messages: [
+        { id: "user-1", role: "user", content: "Please save this" },
+        { id: "assistant-1", role: "assistant", content: "Saved." },
+      ],
+      todos: [],
+      context: { usedTokens: 10, maxTokens: 100, remainingTokens: 90, thinkingTokens: 0, breakdown: { system: 1, user: 3, assistant: 6, tool: 0 } },
+      llmMessages: [],
+    });
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /^tasks$/i }));
+    await userEvent.click(screen.getByRole("button", { name: /session ingest/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /^load$/i }));
+    const drawer = await screen.findByLabelText("Agent Assistant");
+    expect(within(drawer).getByText("Saved.")).toBeInTheDocument();
+
+    act(() => {
+      emitAgentEvent({ sessionId: "saved-session", type: "token", delta: "New drawer message" });
+    });
+    expect(await within(drawer).findByText("New drawer message")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /^load$/i }));
+
+    await waitFor(() => expect(within(drawer).queryByText("New drawer message")).not.toBeInTheDocument());
+    expect(within(drawer).getByText("Saved.")).toBeInTheDocument();
   });
 
   it("renders task prompt markdown from sibling files without task summary card", async () => {

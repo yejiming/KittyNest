@@ -30,7 +30,7 @@ import {
   useNodesState,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import kittyAvatar from "../src-tauri/assets/kittynest-cat-avatar.png";
@@ -99,6 +99,7 @@ export default function App() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [agentDrawerOpen, setAgentDrawerOpen] = useState(false);
   const [loadedAgentSession, setLoadedAgentSession] = useState<SavedAgentSession | null>(null);
+  const [loadedAgentSessionSignal, setLoadedAgentSessionSignal] = useState(0);
   const [agentRefreshSignal, setAgentRefreshSignal] = useState(0);
   const tauriRuntime = isTauriRuntime();
 
@@ -372,6 +373,7 @@ export default function App() {
               try {
                 const next = loadedSession ?? await loadAgentSession(currentTask.projectSlug, currentTask.slug);
                 setLoadedAgentSession(next);
+                setLoadedAgentSessionSignal((current) => current + 1);
                 setAgentDrawerOpen(true);
                 setNotice("Task session loaded");
               } catch (error) {
@@ -459,6 +461,7 @@ export default function App() {
         open={agentDrawerOpen}
         projects={state.projects}
         loadedSession={loadedAgentSession}
+        loadSignal={loadedAgentSessionSignal}
         refreshSignal={agentRefreshSignal}
         onClose={() => setAgentDrawerOpen(false)}
         onSaved={() => void refresh()}
@@ -1264,30 +1267,42 @@ function MemoryView({
   const [entitySessions, setEntitySessions] = useState<Record<string, MemoryRelatedSession[]>>({});
   const [loadingEntity, setLoadingEntity] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const hasSubmittedSearch = useRef(false);
 
-  const refreshMemoryData = () => {
+  const refreshEntities = () => {
     setError("");
-    void getMemorySearch()
-      .then(setLatestSearch)
-      .catch((error) => setError(error instanceof Error ? error.message : String(error)));
     void listMemoryEntities()
       .then(setEntities)
       .catch((error) => setError(error instanceof Error ? error.message : String(error)));
   };
 
+  const refreshLatestSearch = () => {
+    setError("");
+    void getMemorySearch()
+      .then(setLatestSearch)
+      .catch((error) => setError(error instanceof Error ? error.message : String(error)));
+  };
+
   useEffect(() => {
-    refreshMemoryData();
+    setLatestSearch(null);
+    refreshEntities();
   }, []);
 
   useEffect(() => {
-    refreshMemoryData();
+    if (!hasSubmittedSearch.current) return;
+    refreshEntities();
+    refreshLatestSearch();
   }, [jobs]);
 
   const submitSearch = () => {
     const trimmed = query.trim();
     if (!trimmed) return;
     setQuery("");
-    void onSearch(trimmed).then(refreshMemoryData);
+    hasSubmittedSearch.current = true;
+    void onSearch(trimmed).then(() => {
+      refreshEntities();
+      refreshLatestSearch();
+    });
   };
 
   const toggleEntity = (entity: string) => {

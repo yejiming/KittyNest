@@ -1051,12 +1051,25 @@ button {
 }
 
 .saved-task-description {
-  display: contents;
+  display: grid;
+  grid-column: span 2;
+  min-width: 0;
+}
+
+.saved-task-description .markdown-panel,
+.saved-task-conversation {
+  display: flex;
+  flex-direction: column;
+  height: 520px;
+  min-height: 0;
 }
 
 .saved-task-description .markdown-scroll,
 .task-conversation-messages {
   -ms-overflow-style: none;
+  flex: 1;
+  max-height: none;
+  min-height: 0;
   scrollbar-width: none;
 }
 
@@ -1074,8 +1087,6 @@ button {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  max-height: 430px;
-  min-height: 120px;
   overflow: auto;
 }
 
@@ -1142,6 +1153,8 @@ button {
 }
 
 .memory-project-row {
+  display: grid;
+  gap: 8px;
   width: 100%;
 }
 
@@ -1154,7 +1167,7 @@ button {
   border-left: 1px solid rgba(116, 255, 241, 0.2);
   display: grid;
   gap: 8px;
-  margin: -4px 0 8px 18px;
+  margin: 0 0 10px 18px;
   padding-left: 12px;
 }
 
