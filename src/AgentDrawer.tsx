@@ -60,9 +60,10 @@ interface AgentDrawerProps {
   refreshSignal?: number;
   onClose: () => void;
   onSaved?: () => void;
+  onRunComplete?: () => void;
 }
 
-export function AgentDrawer({ open, projects, loadedSession, loadSignal = 0, refreshSignal = 0, onClose, onSaved }: AgentDrawerProps) {
+export function AgentDrawer({ open, projects, loadedSession, loadSignal = 0, refreshSignal = 0, onClose, onSaved, onRunComplete }: AgentDrawerProps) {
   const reviewedProjects = useMemo(
     () => projects.filter((project) => project.reviewStatus === "reviewed"),
     [projects],
@@ -149,6 +150,7 @@ export function AgentDrawer({ open, projects, loadedSession, loadSignal = 0, ref
     if (event.type === "done") {
       setRunning(false);
       finishAssistantMessage("done", event.reply);
+      onRunComplete?.();
       return;
     }
     if (event.type === "cancelled") {
@@ -163,7 +165,7 @@ export function AgentDrawer({ open, projects, loadedSession, loadSignal = 0, ref
         { id: `error-${Date.now()}`, role: "error", content: event.error ?? "Agent run failed" },
       ]);
     }
-  }, [sessionId]);
+  }, [sessionId, onRunComplete, onSaved]);
 
   useEffect(() => {
     let disposed = false;

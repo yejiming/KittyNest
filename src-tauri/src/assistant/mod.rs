@@ -365,7 +365,7 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
         project_summary_root: PathBuf,
         settings: crate::models::LlmSettings,
         user_input: &str,
-        mut llm: F,
+        llm: F,
     ) where
         F: FnMut(
             Vec<serde_json::Value>,
@@ -374,6 +374,64 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
             &mut dyn FnMut(&str),
         ) -> anyhow::Result<llm::AssistantLlmResponse>,
     {
+        self.run_with_llm_and_provider_recorder(
+            session_id,
+            project_root,
+            project_summary_root,
+            settings,
+            user_input,
+            llm,
+            |_| {},
+        );
+    }
+
+    pub fn run_with_llm_and_provider_recorder_for_tests<F, R>(
+        &self,
+        session_id: &str,
+        project_root: PathBuf,
+        project_summary_root: PathBuf,
+        settings: crate::models::LlmSettings,
+        user_input: &str,
+        llm: F,
+        on_provider_call: R,
+    ) where
+        F: FnMut(
+            Vec<serde_json::Value>,
+            Vec<serde_json::Value>,
+            &mut dyn FnMut(&str),
+            &mut dyn FnMut(&str),
+        ) -> anyhow::Result<llm::AssistantLlmResponse>,
+        R: FnMut(&str),
+    {
+        self.run_with_llm_and_provider_recorder(
+            session_id,
+            project_root,
+            project_summary_root,
+            settings,
+            user_input,
+            llm,
+            on_provider_call,
+        );
+    }
+
+    fn run_with_llm_and_provider_recorder<F, R>(
+        &self,
+        session_id: &str,
+        project_root: PathBuf,
+        project_summary_root: PathBuf,
+        settings: crate::models::LlmSettings,
+        user_input: &str,
+        mut llm: F,
+        mut on_provider_call: R,
+    ) where
+        F: FnMut(
+            Vec<serde_json::Value>,
+            Vec<serde_json::Value>,
+            &mut dyn FnMut(&str),
+            &mut dyn FnMut(&str),
+        ) -> anyhow::Result<llm::AssistantLlmResponse>,
+        R: FnMut(&str),
+    {
         if let Err(error) = self.run_inner(
             session_id,
             project_root,
@@ -381,6 +439,7 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
             settings,
             user_input,
             &mut llm,
+            &mut on_provider_call,
         ) {
             self.emit_error(session_id, &error.to_string(), None);
         }
@@ -391,13 +450,15 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
         session_id: String,
         project_root: PathBuf,
         project_summary_root: PathBuf,
+        paths: crate::models::AppPaths,
         settings: crate::models::LlmSettings,
         message: String,
     ) {
         let registry = self.clone();
         std::thread::spawn(move || {
             let request_settings = settings.clone();
-            registry.run_with_llm_for_tests(
+            let provider_call_paths = paths.clone();
+            registry.run_with_llm_and_provider_recorder(
                 &session_id,
                 project_root,
                 project_summary_root,
@@ -412,11 +473,14 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
                         |reasoning| on_reasoning(reasoning),
                     )
                 },
+                move |provider| {
+                    crate::db::record_llm_provider_call_for_paths(&provider_call_paths, provider)
+                },
             );
         });
     }
 
-    fn run_inner<F>(
+    fn run_inner<F, R>(
         &self,
         session_id: &str,
         project_root: PathBuf,
@@ -424,6 +488,7 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
         settings: crate::models::LlmSettings,
         user_input: &str,
         llm: &mut F,
+        on_provider_call: &mut R,
     ) -> anyhow::Result<()>
     where
         F: FnMut(
@@ -432,6 +497,7 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
             &mut dyn FnMut(&str),
             &mut dyn FnMut(&str),
         ) -> anyhow::Result<llm::AssistantLlmResponse>,
+        R: FnMut(&str),
     {
         let run_id = self.begin_user_turn(session_id, user_input);
         let system_prompt = assistant_system_prompt(&project_summary_root);
@@ -493,6 +559,7 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
                 };
                 llm(messages, tools, &mut on_token, &mut on_reasoning)?
             };
+            on_provider_call(&settings.provider);
             if !self.is_current_run(session_id, run_id) {
                 return Ok(());
             }
@@ -1188,6 +1255,34 @@ mod tests {
         let events = emitter.events.lock().unwrap();
         assert_eq!(events[0].event_type, "token");
         assert_eq!(events.last().unwrap().event_type, "done");
+    }
+
+    #[test]
+    fn run_records_provider_after_successful_llm_response() {
+        let registry = super::AgentRegistry::new_for_tests(VecEmitter::default());
+        let mut settings = crate::config::default_llm_settings();
+        settings.provider = "Xiaomi MiMo".into();
+        let project_root = tempfile::tempdir().unwrap();
+        let summary_root = tempfile::tempdir().unwrap();
+        let mut recorded = Vec::new();
+
+        registry.run_with_llm_and_provider_recorder_for_tests(
+            "session-1",
+            project_root.path().to_path_buf(),
+            summary_root.path().to_path_buf(),
+            settings,
+            "hello",
+            |_messages, _tools, _on_token, _on_reasoning| {
+                Ok(super::llm::AssistantLlmResponse {
+                    content: "Hello".into(),
+                    reasoning_content: String::new(),
+                    tool_calls: Vec::new(),
+                })
+            },
+            |provider| recorded.push(provider.to_string()),
+        );
+
+        assert_eq!(recorded, vec!["Xiaomi MiMo"]);
     }
 
     #[test]

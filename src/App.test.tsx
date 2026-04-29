@@ -1691,6 +1691,30 @@ describe("assistant drawer", () => {
     await waitFor(() => expect(stop).toHaveBeenCalledWith(expect.any(String)));
   });
 
+  it("refreshes cached app state after assistant run completes", async () => {
+    const reviewedState = {
+      ...state,
+      projects: [{ ...state.projects[0], reviewStatus: "reviewed" }],
+    } as AppState;
+    vi.spyOn(api, "getAppState").mockResolvedValue(reviewedState);
+    const getCachedState = vi
+      .spyOn(api as ApiWithReviewQueue, "getCachedAppState")
+      .mockResolvedValue({
+        ...reviewedState,
+        llmProviderCalls: [{ provider: "Xiaomi MiMo", calls: 1 }],
+      });
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /^assistant$/i }));
+    const sessionId = window.sessionStorage.getItem("kittynest:agent-session") ?? "";
+    act(() => {
+      emitAgentEvent({ sessionId, type: "done", reply: "ok" });
+    });
+
+    await waitFor(() => expect(getCachedState).toHaveBeenCalledTimes(1));
+  });
+
   it("renders assistant thinking tool and task-list stream events", async () => {
     vi.spyOn(api, "getAppState").mockResolvedValue({
       ...state,
@@ -1770,10 +1794,12 @@ describe("assistant drawer", () => {
   });
 
   it("saves the full drawer timeline and can load it back", async () => {
-    vi.spyOn(api, "getAppState").mockResolvedValue({
+    const reviewedState = {
       ...state,
       projects: [{ ...state.projects[0], reviewStatus: "reviewed" }],
-    });
+    } as AppState;
+    vi.spyOn(api, "getAppState").mockResolvedValue(reviewedState);
+    vi.spyOn(api as ApiWithReviewQueue, "getCachedAppState").mockResolvedValue(reviewedState);
     const saveAgentSession = vi
       .spyOn(api as ApiWithReviewQueue, "saveAgentSession")
       .mockResolvedValue({

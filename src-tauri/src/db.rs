@@ -551,6 +551,15 @@ pub fn record_llm_provider_call(
     Ok(())
 }
 
+pub fn record_llm_provider_call_for_paths(paths: &AppPaths, provider: &str) {
+    let Ok(connection) = open(paths) else {
+        return;
+    };
+    if migrate(&connection).is_ok() {
+        let _ = record_llm_provider_call(&connection, provider);
+    }
+}
+
 pub fn list_llm_provider_calls(
     connection: &rusqlite::Connection,
 ) -> anyhow::Result<Vec<ProviderCallCount>> {

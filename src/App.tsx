@@ -464,6 +464,7 @@ export default function App() {
         loadSignal={loadedAgentSessionSignal}
         refreshSignal={agentRefreshSignal}
         onClose={() => setAgentDrawerOpen(false)}
+        onRunComplete={() => void refreshCached()}
         onSaved={() => void refresh()}
       />
     </div>

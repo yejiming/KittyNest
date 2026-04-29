@@ -252,6 +252,7 @@ pub fn start_agent_run(
         session_id,
         project_root,
         project_summary_root,
+        services.paths.clone(),
         settings,
         message,
     );
@@ -653,6 +654,7 @@ fn save_agent_session_inner(
         crate::config::LlmScenario::Assistant,
     );
     let raw = crate::assistant::llm::request_openai_json(&settings, task_metadata_messages(&timeline))?;
+    crate::db::record_llm_provider_call_for_paths(paths, &settings.provider);
     let draft = parse_task_metadata_json(&raw)?;
     let task_slug =
         crate::db::unique_task_slug(&connection, project_id, &crate::utils::slugify_lower(&draft.task_name))?;
