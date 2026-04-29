@@ -91,6 +91,7 @@ const state: AppState = {
     sessions: 2,
     unprocessedSessions: 1,
     memories: 0,
+    entities: 0,
   },
   projects: [
     {
@@ -199,7 +200,9 @@ describe("KittyNest dashboard", () => {
 
     await screen.findByRole("heading", { name: "Dashboard" });
 
-    expect(screen.getByAltText("KittyNest cat avatar")).toHaveClass("brand-avatar");
+    const logo = screen.getByAltText("KittyNest app logo");
+    expect(logo).toHaveClass("brand-avatar");
+    expect(logo).toHaveAttribute("src", expect.stringContaining("kittynest-app-icon"));
     expect(document.querySelector(".dashboard-grid > .metrics-strip")).toBeInTheDocument();
     expect(document.querySelectorAll(".metrics-strip > .metric")).toHaveLength(4);
     expect(document.querySelector(".dashboard-grid > .projects-panel")).toBeInTheDocument();
@@ -213,6 +216,30 @@ describe("KittyNest dashboard", () => {
     expect(document.querySelector(".pulse-art")).toHaveAttribute("alt", "");
     expect(document.querySelector(".jobs-layout")).toBeInTheDocument();
     expect(document.querySelector(".jobs-art")).toHaveAttribute("alt", "");
+  });
+
+  it("shows compact memory and entity counts in the pulse card", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue({
+      ...state,
+      stats: {
+        ...state.stats,
+        memories: 1172,
+        entities: 24,
+      },
+    });
+
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Dashboard" });
+    const pulse = document.querySelector(".pulse-panel") as HTMLElement;
+
+    expect(within(pulse).getByText("MEMORIES")).toBeInTheDocument();
+    expect(within(pulse).getByText("1,172")).toBeInTheDocument();
+    expect(within(pulse).getByText("ENTITIES")).toBeInTheDocument();
+    expect(within(pulse).getByText("24")).toBeInTheDocument();
+    expect(within(pulse).queryByText("Local memory")).not.toBeInTheDocument();
+    expect(within(pulse).queryByText("Project memory draft")).not.toBeInTheDocument();
+    expect(within(pulse).queryByText(/memory files indexed/i)).not.toBeInTheDocument();
   });
 
   it("shows a load error instead of staying on the boot screen", async () => {
@@ -301,6 +328,155 @@ describe("KittyNest dashboard", () => {
 
     await waitFor(() => expect(enqueue).toHaveBeenLastCalledWith(undefined));
     expect(await screen.findByText(/session analysis queued: 2 sessions/i)).toBeInTheDocument();
+  });
+
+  it("filters sessions by project, fuzzy name, updated range, and status", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-04-27T12:00:00Z"));
+    vi.spyOn(api, "getAppState").mockResolvedValue({
+      ...state,
+      projects: [
+        state.projects[0],
+        {
+          ...state.projects[0],
+          slug: "SecondProject",
+          displayTitle: "Second Project",
+          workdir: "/Users/kc/SecondProject",
+          sources: ["claude"],
+          reviewStatus: "reviewed",
+        },
+      ],
+      sessions: [
+        {
+          ...state.sessions[0],
+          sessionId: "match",
+          projectSlug: "SecondProject",
+          title: "Session Search Retrofit",
+          source: "claude",
+          status: "failed",
+          updatedAt: "2026-04-27T10:00:00Z",
+        },
+        {
+          ...state.sessions[0],
+          sessionId: "wrong-title",
+          projectSlug: "SecondProject",
+          title: "Other Workflow",
+          source: "claude",
+          status: "failed",
+          updatedAt: "2026-04-27T10:00:00Z",
+        },
+        {
+          ...state.sessions[0],
+          sessionId: "too-old",
+          projectSlug: "SecondProject",
+          title: "Session Search Ancient",
+          source: "claude",
+          status: "failed",
+          updatedAt: "2026-04-20T10:00:00Z",
+        },
+        {
+          ...state.sessions[0],
+          sessionId: "wrong-status",
+          projectSlug: "SecondProject",
+          title: "Session Search Done",
+          source: "claude",
+          status: "analyzed",
+          updatedAt: "2026-04-27T10:00:00Z",
+        },
+        {
+          ...state.sessions[0],
+          sessionId: "wrong-project",
+          title: "Session Search Wrong Project",
+          status: "failed",
+          updatedAt: "2026-04-27T10:00:00Z",
+        },
+      ],
+    });
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /^sessions$/i }));
+    await userEvent.selectOptions(screen.getByLabelText("Project"), "SecondProject");
+    await userEvent.type(screen.getByLabelText("Session Name"), "search");
+    await userEvent.selectOptions(screen.getByLabelText("Updated"), "3days");
+    await userEvent.selectOptions(screen.getByLabelText("Status"), "failed");
+    await userEvent.click(screen.getByRole("button", { name: /Second Project/i }));
+
+    expect(screen.getByText("Session Search Retrofit")).toBeInTheDocument();
+    expect(screen.queryByText("Other Workflow")).not.toBeInTheDocument();
+    expect(screen.queryByText("Session Search Ancient")).not.toBeInTheDocument();
+    expect(screen.queryByText("Session Search Done")).not.toBeInTheDocument();
+    expect(screen.queryByText("Session Search Wrong Project")).not.toBeInTheDocument();
+  });
+
+  it("keeps session search fields uniform with session name first", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue(state);
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /^sessions$/i }));
+    const filter = document.querySelector(".sessions-filter-grid") as HTMLElement;
+    const fields = Array.from(filter.querySelectorAll(".filter-field"));
+
+    expect(fields.map((field) => field.querySelector("span")?.textContent)).toEqual([
+      "Session Name",
+      "Project",
+      "Updated",
+      "Status",
+    ]);
+    expect(fields).toHaveLength(4);
+  });
+
+  it("filters projects by fuzzy name, status, and source", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue({
+      ...state,
+      projects: [
+        state.projects[0],
+        {
+          ...state.projects[0],
+          slug: "KittyCopilot",
+          displayTitle: "KittyCopilot",
+          workdir: "/Users/kc/KittyCopilot",
+          sources: ["claude"],
+          reviewStatus: "reviewed",
+        },
+        {
+          ...state.projects[0],
+          slug: "AgentKit",
+          displayTitle: "AgentKit",
+          workdir: "/Users/kc/AgentKit",
+          sources: ["codex"],
+          reviewStatus: "reviewed",
+        },
+      ],
+    });
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /^projects$/i }));
+    await userEvent.type(screen.getByLabelText("Project Name"), "kitty");
+    await userEvent.selectOptions(screen.getByLabelText("Status"), "reviewed");
+    await userEvent.selectOptions(screen.getByLabelText("Source"), "claude");
+
+    expect(screen.getByRole("button", { name: /KittyCopilot/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /KittyNest/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /AgentKit/i })).not.toBeInTheDocument();
+  });
+
+  it("keeps project search fields uniform", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue(state);
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /^projects$/i }));
+    const filter = document.querySelector(".project-filter-grid") as HTMLElement;
+    const fields = Array.from(filter.querySelectorAll(".filter-field"));
+
+    expect(fields.map((field) => field.querySelector("span")?.textContent)).toEqual([
+      "Project Name",
+      "Status",
+      "Source",
+    ]);
+    expect(fields).toHaveLength(3);
   });
 
   it("enqueues one session from session detail", async () => {
@@ -858,6 +1034,47 @@ describe("KittyNest dashboard", () => {
     await userEvent.click(await screen.findByText("Import Sessions"));
 
     expect(await screen.findByText("Memory Path")).toBeInTheDocument();
+  });
+
+  it("opens entity sessions that are outside the cached session list", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue({
+      ...state,
+      sessions: [
+        {
+          ...state.sessions[0],
+          sessionId: "09651c12-d1b4-4472-835f-f5eed215f083",
+          title: null,
+          status: "pending",
+        },
+      ],
+    });
+    vi.spyOn(api as ApiWithReviewQueue, "listMemoryEntities").mockResolvedValue([
+      { entity: "kittycopilot", canonicalName: "Kittycopilot", entityType: "project", sessionCount: 1, createdAt: "2026-04-27T00:00:00Z" } as any,
+    ]);
+    vi.spyOn(api as ApiWithReviewQueue, "listEntitySessions").mockResolvedValue([
+      {
+        sessionId: "019da41b-5c63-74e0-86dc-6500487a24b9",
+        title: "实现 simulation 场景 rule details modal 的 Assignments 和 Result 编辑功能",
+        projectSlug: "KittyCopilot",
+        sharedEntities: ["Kittycopilot"],
+      },
+    ]);
+    const getSessionMemory = vi.spyOn(api as ApiWithReviewQueue, "getSessionMemory").mockResolvedValue({
+      sessionId: "019da41b-5c63-74e0-86dc-6500487a24b9",
+      memoryPath: "/Users/kc/.kittynest/memories/sessions/019da41b-5c63-74e0-86dc-6500487a24b9/memory.md",
+      memories: ["Related memory."],
+      relatedSessions: [],
+    });
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Dashboard" });
+    await userEvent.click(screen.getByRole("button", { name: "Memory" }));
+    await userEvent.click(await screen.findByRole("button", { name: /Kittycopilot/i }));
+    await userEvent.click(await screen.findByText("实现 simulation 场景 rule details modal 的 Assignments 和 Result 编辑功能"));
+
+    expect(await screen.findByRole("heading", { name: "实现 simulation 场景 rule details modal 的 Assignments 和 Result 编辑功能" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "09651c12-d1b4-4472-835f-f5eed215f083" })).not.toBeInTheDocument();
+    await waitFor(() => expect(getSessionMemory).toHaveBeenLastCalledWith("019da41b-5c63-74e0-86dc-6500487a24b9"));
   });
 
   it("renders task detail metadata and session summary cards", async () => {

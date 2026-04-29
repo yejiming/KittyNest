@@ -47,6 +47,7 @@ export interface DashboardStats {
   sessions: number;
   unprocessedSessions: number;
   memories: number;
+  entities: number;
 }
 
 export interface JobRecord {

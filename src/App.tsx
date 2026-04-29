@@ -33,7 +33,7 @@ import "@xyflow/react/dist/style.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import kittyAvatar from "../src-tauri/assets/kittynest-cat-avatar.png";
+import kittyAvatar from "../src-tauri/assets/kittynest-app-icon.png";
 import memoryPulseBrain from "../src-tauri/assets/memory-pulse-brain.png";
 import tauriJobsCube from "../src-tauri/assets/tauri-jobs-cube.png";
 import {
@@ -94,6 +94,7 @@ export default function App() {
   const [selectedProject, setSelectedProject] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<string | null>(null);
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
+  const [selectedSessionFallback, setSelectedSessionFallback] = useState<SessionRecord | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState("Tauri commands idle");
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -149,9 +150,22 @@ export default function App() {
     [projectTasks, selectedTask],
   );
   const currentSession = useMemo(
-    () => state?.sessions.find((session) => session.sessionId === selectedSession) ?? state?.sessions[0],
-    [selectedSession, state],
+    () => {
+      if (!state) return undefined;
+      if (!selectedSession) return state.sessions[0];
+      return (
+        state.sessions.find((session) => session.sessionId === selectedSession) ??
+        (selectedSessionFallback?.sessionId === selectedSession ? selectedSessionFallback : undefined)
+      );
+    },
+    [selectedSession, selectedSessionFallback, state],
   );
+
+  function openSession(sessionId: string, fallback?: MemoryRelatedSession) {
+    setSelectedSession(sessionId);
+    setSelectedSessionFallback(fallback ? relatedSessionToSessionRecord(fallback) : null);
+    setView("sessionDetail");
+  }
 
   async function runAction(label: string, action: () => Promise<string>, refreshMode: "scan" | "cached" = "scan") {
     setBusy(label);
@@ -251,7 +265,7 @@ export default function App() {
           <span />
         </div>
         <button className="brand" aria-label="Dashboard home" onClick={() => setView("dashboard")}>
-          <img className="brand-avatar" src={kittyAvatar} alt="KittyNest cat avatar" />
+          <img className="brand-avatar" src={kittyAvatar} alt="KittyNest app logo" />
           <span>
             <strong>KittyNest</strong>
             <small>Local Mode</small>
@@ -306,10 +320,7 @@ export default function App() {
               setSelectedProject(slug);
               setView("projectDetail");
             }}
-            onOpenSession={(sessionId) => {
-              setSelectedSession(sessionId);
-              setView("sessionDetail");
-            }}
+            onOpenSession={openSession}
             onRefreshMemories={() => runQueueAction("Refresh memories", async () => {
               const result = await enqueueRebuildMemories();
               return `Memory refresh queued: ${result.total} step${result.total === 1 ? "" : "s"}`;
@@ -380,10 +391,7 @@ export default function App() {
                 setNotice(error instanceof Error ? error.message : String(error));
               }
             }}
-            onOpenSession={(sessionId) => {
-              setSelectedSession(sessionId);
-              setView("sessionDetail");
-            }}
+            onOpenSession={openSession}
           />
         )}
 
@@ -393,10 +401,7 @@ export default function App() {
             sessions={state.sessions}
             busy={busy}
             onAnalyze={queueSessionsAnalyze}
-            onOpen={(sessionId) => {
-              setSelectedSession(sessionId);
-              setView("sessionDetail");
-            }}
+            onOpen={openSession}
           />
         )}
 
@@ -405,20 +410,14 @@ export default function App() {
             session={currentSession}
             busy={busy}
             onAnalyze={() => queueSession(currentSession.sessionId)}
-            onOpenSession={(sessionId) => {
-              setSelectedSession(sessionId);
-              setView("sessionDetail");
-            }}
+            onOpenSession={openSession}
           />
         )}
         {view === "memories" && (
           <MemoryView
             jobs={state.jobs}
             sessions={state.sessions}
-            onOpenSession={(sessionId) => {
-              setSelectedSession(sessionId);
-              setView("sessionDetail");
-            }}
+            onOpenSession={openSession}
             onSearch={(query) => runQueueAction("Search memories", async () => {
               const result = await enqueueSearchMemories(query);
               return `Memory search queued: ${result.total} job${result.total === 1 ? "" : "s"}`;
@@ -573,8 +572,16 @@ function Dashboard({
         <div className="pulse">
           <img className="pulse-art" src={memoryPulseBrain} alt="" />
           <div className="pulse-copy">
-            <strong>Project memory draft</strong>
-            <span>{state.stats.memories} memory files indexed</span>
+            <div className="pulse-stats">
+              <div className="pulse-stat">
+                <strong>{formatDashboardCount(state.stats.memories)}</strong>
+                <span>MEMORIES</span>
+              </div>
+              <div className="pulse-stat">
+                <strong>{formatDashboardCount(state.stats.entities)}</strong>
+                <span>ENTITIES</span>
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -591,8 +598,73 @@ function Dashboard({
 }
 
 function ProjectsList({ projects, onOpen }: { projects: ProjectRecord[]; onOpen: (slug: string) => void }) {
+  const [projectNameFilter, setProjectNameFilter] = useState("");
+  const [projectStatusFilter, setProjectStatusFilter] = useState("All");
+  const [projectSourceFilter, setProjectSourceFilter] = useState("All");
+  const projectStatuses = useMemo(
+    () => uniqueSorted(projects.map((project) => project.reviewStatus)),
+    [projects],
+  );
+  const projectSources = useMemo(
+    () => uniqueSorted(projects.flatMap((project) => project.sources)),
+    [projects],
+  );
+  const filteredProjects = useMemo(
+    () =>
+      projects.filter((project) => {
+        const nameMatches = matchesSearch([project.displayTitle, project.slug], projectNameFilter);
+        const statusMatches = projectStatusFilter === "All" || project.reviewStatus === projectStatusFilter;
+        const sourceMatches = projectSourceFilter === "All" || project.sources.includes(projectSourceFilter);
+        return nameMatches && statusMatches && sourceMatches;
+      }),
+    [projectNameFilter, projectSourceFilter, projectStatusFilter, projects],
+  );
+
   return (
     <section className="detail-layout">
+      <div className="panel wide filter-card">
+        <PanelTitle title="Search Projects" />
+        <div className="filter-grid project-filter-grid">
+          <label className="filter-field">
+            <span>Project Name</span>
+            <input
+              aria-label="Project Name"
+              value={projectNameFilter}
+              onChange={(event) => setProjectNameFilter(event.target.value)}
+            />
+          </label>
+          <label className="filter-field">
+            <span>Status</span>
+            <select
+              aria-label="Status"
+              value={projectStatusFilter}
+              onChange={(event) => setProjectStatusFilter(event.target.value)}
+            >
+              <option value="All">All statuses</option>
+              {projectStatuses.map((status) => (
+                <option key={status} value={status}>
+                  {status.replace("_", " ")}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="filter-field">
+            <span>Source</span>
+            <select
+              aria-label="Source"
+              value={projectSourceFilter}
+              onChange={(event) => setProjectSourceFilter(event.target.value)}
+            >
+              <option value="All">All sources</option>
+              {projectSources.map((source) => (
+                <option key={source} value={source}>
+                  {source}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      </div>
       <div className="panel wide">
         <PanelTitle title="Projects" />
         <div className="list-page data-table projects-table" role="table">
@@ -602,7 +674,7 @@ function ProjectsList({ projects, onOpen }: { projects: ProjectRecord[]; onOpen:
             <span role="columnheader">Status</span>
             <span role="columnheader">Source</span>
           </div>
-          {projects.map((project) => (
+          {filteredProjects.map((project) => (
             <button key={project.slug} className="list-row" onClick={() => onOpen(project.slug)}>
               <strong>{project.displayTitle}</strong>
               <span>{project.workdir}</span>
@@ -611,6 +683,7 @@ function ProjectsList({ projects, onOpen }: { projects: ProjectRecord[]; onOpen:
             </button>
           ))}
           {projects.length === 0 && <EmptyLine text="No projects yet. Scan sources to discover local sessions." />}
+          {projects.length > 0 && filteredProjects.length === 0 && <EmptyLine text="No projects match filters." />}
         </div>
       </div>
     </section>
@@ -665,10 +738,91 @@ function SessionsList({
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [analyzeRange, setAnalyzeRange] = useState<AnalyzeRange>("7days");
+  const [projectFilter, setProjectFilter] = useState("All");
+  const [sessionNameFilter, setSessionNameFilter] = useState("");
+  const [updatedFilter, setUpdatedFilter] = useState<AnalyzeRange>("All");
+  const [statusFilter, setStatusFilter] = useState("All");
+  const sessionStatuses = useMemo(
+    () => uniqueSorted(sessions.map((session) => session.status)),
+    [sessions],
+  );
+  const filteredSessions = useMemo(
+    () =>
+      sessions.filter((session) => {
+        const projectMatches = projectFilter === "All" || session.projectSlug === projectFilter;
+        const nameMatches = matchesSearch([session.title, session.sessionId], sessionNameFilter);
+        const updatedMatches = isWithinAnalyzeRange(session.updatedAt || session.createdAt, updatedFilter);
+        const statusMatches = statusFilter === "All" || session.status === statusFilter;
+        return projectMatches && nameMatches && updatedMatches && statusMatches;
+      }),
+    [projectFilter, sessionNameFilter, sessions, statusFilter, updatedFilter],
+  );
+  const sessionFiltersActive = sessionNameFilter.trim() !== "" || updatedFilter !== "All" || statusFilter !== "All";
   const sessionsByProject = (projectSlug: string) =>
-    sessions.filter((session) => session.projectSlug === projectSlug && session.status === "analyzed");
+    filteredSessions.filter((session) => session.projectSlug === projectSlug);
+  const filteredProjects = projects.filter((project) => {
+    if (projectFilter !== "All" && project.slug !== projectFilter) return false;
+    return !sessionFiltersActive || sessionsByProject(project.slug).length > 0;
+  });
+
   return (
     <section className="detail-layout">
+      <div className="panel wide filter-card">
+        <PanelTitle title="Search Sessions" />
+        <div className="filter-grid sessions-filter-grid">
+          <label className="filter-field">
+            <span>Session Name</span>
+            <input
+              aria-label="Session Name"
+              value={sessionNameFilter}
+              onChange={(event) => setSessionNameFilter(event.target.value)}
+            />
+          </label>
+          <label className="filter-field">
+            <span>Project</span>
+            <select
+              aria-label="Project"
+              value={projectFilter}
+              onChange={(event) => setProjectFilter(event.target.value)}
+            >
+              <option value="All">All projects</option>
+              {projects.map((project) => (
+                <option key={project.slug} value={project.slug}>
+                  {project.displayTitle}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="filter-field">
+            <span>Updated</span>
+            <select
+              aria-label="Updated"
+              value={updatedFilter}
+              onChange={(event) => setUpdatedFilter(event.target.value as AnalyzeRange)}
+            >
+              <option value="All">All time</option>
+              <option value="3days">3 days ago</option>
+              <option value="7days">7 days ago</option>
+              <option value="30days">30 days ago</option>
+            </select>
+          </label>
+          <label className="filter-field">
+            <span>Status</span>
+            <select
+              aria-label="Status"
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value)}
+            >
+              <option value="All">All statuses</option>
+              {sessionStatuses.map((status) => (
+                <option key={status} value={status}>
+                  {status}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      </div>
       <div className="panel wide">
         <PanelTitle
           title="Sessions"
@@ -703,7 +857,7 @@ function SessionsList({
             <span role="columnheader">Status</span>
             <span role="columnheader">Source</span>
           </div>
-          {projects.map((project) => (
+          {filteredProjects.map((project) => (
             <div key={project.slug} className="memory-project-row">
               <button
                 className="list-row"
@@ -727,12 +881,13 @@ function SessionsList({
                       <small>{compactAgeLabel(session.updatedAt || session.createdAt)}</small>
                     </button>
                   ))}
-                  {sessionsByProject(project.slug).length === 0 && <EmptyLine text="No memories yet." />}
+                  {sessionsByProject(project.slug).length === 0 && <EmptyLine text="No sessions match filters." />}
                 </div>
               )}
             </div>
           ))}
           {projects.length === 0 && <EmptyLine text="No projects yet. Scan sources to discover local sessions." />}
+          {projects.length > 0 && filteredProjects.length === 0 && <EmptyLine text="No sessions match filters." />}
         </div>
       </div>
     </section>
@@ -878,6 +1033,10 @@ function stripFrontmatter(content: string) {
 function truncateDashboardLabel(value: string) {
   const characters = Array.from(value);
   return characters.length > 10 ? `${characters.slice(0, 10).join("")}...` : value;
+}
+
+function formatDashboardCount(value: number) {
+  return new Intl.NumberFormat("en-US").format(value);
 }
 
 function TaskView({
@@ -1258,7 +1417,7 @@ function MemoryView({
 }: {
   jobs: AppState["jobs"];
   sessions: SessionRecord[];
-  onOpenSession: (sessionId: string) => void;
+  onOpenSession: (sessionId: string, fallback?: MemoryRelatedSession) => void;
   onSearch: (query: string) => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
@@ -1411,8 +1570,42 @@ function updatedAfterForAnalyzeRange(range: AnalyzeRange) {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 }
 
+function isWithinAnalyzeRange(timestamp: string, range: AnalyzeRange) {
+  if (range === "All") return true;
+  const parsed = Date.parse(timestamp);
+  if (Number.isNaN(parsed)) return false;
+  const days = Number(range.replace("days", ""));
+  return parsed >= Date.now() - days * 24 * 60 * 60 * 1000;
+}
+
+function matchesSearch(values: Array<string | null | undefined>, query: string) {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return true;
+  return values.some((value) => (value ?? "").toLocaleLowerCase().includes(needle));
+}
+
+function uniqueSorted(values: string[]) {
+  return Array.from(new Set(values.filter(Boolean))).sort((left, right) => left.localeCompare(right));
+}
+
 function entityDisplayName(entity: MemoryEntityRecord) {
   return entity.canonicalName || entity.entity;
+}
+
+function relatedSessionToSessionRecord(session: MemoryRelatedSession): SessionRecord {
+  return {
+    source: "memory",
+    sessionId: session.sessionId,
+    rawPath: session.sharedEntities.join(", ") || "Memory graph relation",
+    projectSlug: session.projectSlug,
+    taskSlug: null,
+    title: session.title,
+    summary: null,
+    summaryPath: null,
+    createdAt: "",
+    updatedAt: "",
+    status: "analyzed",
+  };
 }
 
 function EntitySessionRow({
@@ -1422,10 +1615,10 @@ function EntitySessionRow({
 }: {
   relatedSession: MemoryRelatedSession;
   session: SessionRecord | null;
-  onOpen: (sessionId: string) => void;
+  onOpen: (sessionId: string, fallback?: MemoryRelatedSession) => void;
 }) {
   return (
-    <button className="list-row" onClick={() => onOpen(relatedSession.sessionId)}>
+    <button className="list-row" onClick={() => onOpen(relatedSession.sessionId, relatedSession)}>
       <strong>{session?.title ?? relatedSession.title}</strong>
       <span>{session?.rawPath ?? relatedSession.sharedEntities.join(", ")}</span>
       <span>{session?.projectSlug ?? relatedSession.projectSlug}</span>

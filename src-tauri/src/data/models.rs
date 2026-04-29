@@ -152,6 +152,7 @@ pub struct DashboardStats {
     pub sessions: usize,
     pub unprocessed_sessions: usize,
     pub memories: usize,
+    pub entities: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

@@ -2,17 +2,16 @@ pub mod analysis;
 pub mod assistant;
 pub mod commands;
 pub mod config;
-pub mod db;
-pub mod errors;
-pub mod graph;
+pub mod data;
 pub mod llm;
 pub mod markdown;
 pub mod memory;
-pub mod models;
-pub mod presets;
 pub mod scanner;
 pub mod services;
 pub mod utils;
+
+pub use data::{db, graph, models};
+pub use llm::presets;
 
 use tauri::Manager;
 

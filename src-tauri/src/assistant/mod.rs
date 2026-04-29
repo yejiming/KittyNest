@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{
@@ -521,7 +522,7 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
             let mut think_filter = ThinkBlockStreamFilter::default();
             let token_registry = self.clone();
             let token_session_id = session_id.to_string();
-            let mut reasoning_started = false;
+            let reasoning_started = Cell::new(false);
             let reasoning_registry = self.clone();
             let reasoning_session_id = session_id.to_string();
             let mut on_token = |token: &str| {
@@ -533,6 +534,9 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
                             token_registry.emit(payload);
                         }
                         ThinkStreamEvent::ThinkingStatus(status) => {
+                            if status == "running" {
+                                reasoning_started.set(true);
+                            }
                             let mut payload = AgentEvent::new(&token_session_id, "thinking_status");
                             payload.status = Some(status);
                             token_registry.emit(payload);
@@ -551,9 +555,9 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
                     if delta.is_empty() {
                         return;
                     }
-                    if !reasoning_started {
+                    if !reasoning_started.get() {
                         reasoning_registry.emit_thinking_status(&reasoning_session_id, "running");
-                        reasoning_started = true;
+                        reasoning_started.set(true);
                     }
                     reasoning_registry.emit_thinking_delta(&reasoning_session_id, delta);
                 };
@@ -571,13 +575,14 @@ impl<E: AgentEventEmitter> AgentRegistry<E> {
                 let mut payload = AgentEvent::new(session_id, "thinking_status");
                 payload.status = Some("finished".into());
                 self.emit(payload);
+                reasoning_started.set(false);
             }
-            if !reasoning_started && !response.reasoning_content.is_empty() {
+            if !reasoning_started.get() && !response.reasoning_content.is_empty() {
                 self.emit_thinking_status(session_id, "running");
                 self.emit_thinking_delta(session_id, &response.reasoning_content);
-                reasoning_started = true;
+                reasoning_started.set(true);
             }
-            if reasoning_started {
+            if reasoning_started.get() {
                 self.emit_thinking_status(session_id, "finished");
             }
 

@@ -644,25 +644,50 @@ button {
   align-items: center;
   color: #76fff7;
   display: grid;
-  gap: 14px;
-  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 16px;
+  grid-template-columns: 104px minmax(0, 1fr);
   min-height: 76px;
 }
 
 .pulse-art {
   filter: drop-shadow(0 0 14px rgba(0, 216, 255, 0.3));
-  height: 94px;
+  height: 84px;
   object-fit: contain;
-  width: 120px;
+  width: 104px;
 }
 
 .pulse-copy {
   display: grid;
-  gap: 7px;
+  min-width: 0;
 }
 
-.pulse-copy span {
+.pulse-stats {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.pulse-stat {
+  border-left: 1px solid rgba(116, 255, 241, 0.28);
+  min-width: 0;
+  padding-left: 10px;
+}
+
+.pulse-stat strong {
+  color: #e9fbff;
+  display: block;
+  font-family: "Space Mono", monospace;
+  font-size: 22px;
+  line-height: 1.05;
+  overflow-wrap: anywhere;
+}
+
+.pulse-stat span {
   color: #9cb8bd;
+  display: block;
+  font-size: 11px;
+  margin-top: 6px;
+  text-transform: uppercase;
 }
 
 .status-counts {
@@ -1104,6 +1129,73 @@ button {
   max-height: calc(100vh - 210px);
   overflow: auto;
   padding-right: 4px;
+}
+
+.filter-card {
+  padding-bottom: 16px;
+}
+
+.filter-card .panel-title {
+  margin-bottom: 14px;
+}
+
+.filter-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.sessions-filter-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.project-filter-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.filter-field {
+  color: #76fff7;
+  display: grid;
+  font-size: 12px;
+  gap: 8px;
+  margin-top: 0;
+  min-width: 0;
+  text-transform: uppercase;
+}
+
+.filter-card input,
+.filter-card select {
+  background:
+    linear-gradient(180deg, rgba(0, 216, 255, 0.12), rgba(2, 7, 9, 0.54)),
+    rgba(0, 0, 0, 0.32);
+  border-color: rgba(116, 255, 241, 0.32);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+  height: 42px;
+  min-height: 42px;
+  width: 100%;
+}
+
+.filter-card select {
+  appearance: none;
+  background:
+    linear-gradient(45deg, transparent 50%, #76fff7 50%) calc(100% - 18px) 50% / 6px 6px no-repeat,
+    linear-gradient(135deg, #76fff7 50%, transparent 50%) calc(100% - 14px) 50% / 6px 6px no-repeat,
+    linear-gradient(180deg, rgba(0, 216, 255, 0.12), rgba(2, 7, 9, 0.54)),
+    rgba(0, 0, 0, 0.32);
+  padding-right: 38px;
+}
+
+.filter-card input:focus,
+.filter-card select:focus {
+  border-color: rgba(127, 255, 94, 0.62);
+  box-shadow:
+    inset 0 0 0 1px rgba(127, 255, 94, 0.18),
+    0 0 0 3px rgba(127, 255, 94, 0.08);
+  outline: none;
+}
+
+.filter-card select option {
+  background: #041014;
+  color: #e9fbff;
 }
 
 .table-header,

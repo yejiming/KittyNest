@@ -56,6 +56,7 @@ const fallbackState: AppState = {
     sessions: 0,
     unprocessedSessions: 0,
     memories: 0,
+    entities: 0,
   },
   projects: [],
   tasks: [],

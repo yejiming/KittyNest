@@ -1,38 +1,3 @@
-use crate::models::{AppPaths, LlmModelSettings, LlmScenarioModels, LlmSettings};
-
-const DEFAULT_MAX_CONTEXT: usize = 128_000;
-const DEFAULT_MAX_TOKENS: usize = 4_096;
-const DEFAULT_TEMPERATURE: f64 = 0.2;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LlmScenario {
-    Default,
-    Project,
-    Session,
-    Memory,
-    Assistant,
-}
-
-pub fn default_paths() -> AppPaths {
-    let home = std::env::var("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("."));
-    AppPaths::from_data_dir(home.join(".kittynest"))
-}
-
-pub fn initialize_workspace(paths: &AppPaths) -> anyhow::Result<()> {
-    std::fs::create_dir_all(&paths.projects_dir)?;
-    std::fs::create_dir_all(&paths.memories_dir)?;
-
-    if !paths.config_path.exists() {
-        write_llm_settings(paths, &default_llm_settings())?;
-    }
-
-    let connection = crate::db::open(paths)?;
-    crate::db::migrate(&connection)?;
-    Ok(())
-}
-
 pub fn read_llm_settings(paths: &AppPaths) -> anyhow::Result<LlmSettings> {
     if !paths.config_path.exists() {
         return Ok(default_llm_settings());
@@ -501,3 +466,4 @@ task_model = "openrouter-fast"
         assert_eq!(read.models[0].temperature, 0.45);
     }
 }
+
