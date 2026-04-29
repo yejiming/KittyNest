@@ -1470,6 +1470,71 @@ describe("KittyNest dashboard", () => {
     }));
     expect(screen.getByRole("button", { name: "OpenRouter Draft" })).toBeInTheDocument();
   });
+
+  it("shows call counts for models added during the current app session", async () => {
+    const settingsState = {
+      ...state,
+      llmSettings: {
+        ...state.llmSettings,
+        id: "openrouter-fast",
+        remark: "Fast",
+        model: "openai/gpt-4o-mini",
+        models: [
+          {
+            id: "openrouter-fast",
+            provider: "OpenRouter",
+            remark: "Fast",
+            baseUrl: "https://openrouter.ai/api/v1",
+            interface: "openai",
+            model: "openai/gpt-4o-mini",
+            apiKey: "sk-openrouter",
+            maxContext: 64000,
+            maxTokens: 2048,
+            temperature: 0.3,
+          },
+        ],
+        scenarioModels: {
+          defaultModel: "openrouter-fast",
+          projectModel: "",
+          sessionModel: "",
+          memoryModel: "",
+          assistantModel: "",
+        },
+      },
+      providerPresets: [
+        ...state.providerPresets,
+        {
+          provider: "DeepSeek",
+          baseUrl: "https://api.deepseek.com/v1",
+          interface: "openai",
+        },
+      ],
+      llmProviderCalls: [{ provider: "OpenRouter", calls: 3 }],
+    } as AppState;
+    let latestState = settingsState;
+    vi.spyOn(api, "getAppState").mockResolvedValue(settingsState);
+    vi.spyOn(api as ApiWithReviewQueue, "getCachedAppState").mockImplementation(async () => latestState);
+    vi.spyOn(api, "saveLlmSettings").mockImplementation(async (settings) => {
+      latestState = { ...latestState, llmSettings: settings };
+      return { saved: true };
+    });
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /^settings$/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^add model$/i }));
+    await userEvent.selectOptions(screen.getByLabelText(/^Provider$/i), "DeepSeek");
+    await userEvent.type(screen.getByLabelText(/^Remark$/i), "Reasoner");
+    await userEvent.type(screen.getByLabelText(/^Model$/i), "deepseek-reasoner");
+    await userEvent.click(screen.getByRole("button", { name: /^save model$/i }));
+
+    await waitFor(() => {
+      const providerCalls = document.querySelector(".provider-call-stats");
+      expect(providerCalls).not.toBeNull();
+      expect(within(providerCalls as HTMLElement).getByText("DeepSeek")).toBeInTheDocument();
+      expect(within(providerCalls as HTMLElement).getByText("0")).toBeInTheDocument();
+    });
+  });
 });
 
 describe("agent drawer helpers", () => {

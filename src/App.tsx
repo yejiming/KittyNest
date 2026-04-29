@@ -1458,7 +1458,7 @@ function SettingsView({
     initialDraftModel(normalizeLlmSettings(state.llmSettings)),
   );
   const [editingModelId, setEditingModelId] = useState(draftModel.id);
-  const providerCallCounts = (state.llmProviderCalls ?? []).filter((item) => item.calls > 0);
+  const providerCallCounts = providerCallCountsForSettings(settings.models, state.llmProviderCalls ?? []);
 
   useEffect(() => {
     const normalized = normalizeLlmSettings(state.llmSettings);
@@ -1829,6 +1829,21 @@ function rewriteScenarioModelIds(
     memoryModel: scenarioModels.memoryModel === oldModelId ? nextModelId : scenarioModels.memoryModel,
     assistantModel: scenarioModels.assistantModel === oldModelId ? nextModelId : scenarioModels.assistantModel,
   };
+}
+
+function providerCallCountsForSettings(
+  models: LlmModelSettings[],
+  callCounts: AppState["llmProviderCalls"],
+) {
+  const rows = callCounts.filter((item) => item.calls > 0 && item.provider.trim());
+  const seen = new Set(rows.map((item) => item.provider));
+  for (const model of models) {
+    const provider = model.provider.trim();
+    if (!provider || seen.has(provider)) continue;
+    rows.push({ provider, calls: 0 });
+    seen.add(provider);
+  }
+  return rows;
 }
 
 function normalizeLlmModel(model: LlmModelSettings, settings: LlmSettings): LlmModelSettings {
