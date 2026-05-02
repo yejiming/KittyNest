@@ -344,6 +344,27 @@ pub fn analyzed_sessions(connection: &rusqlite::Connection) -> anyhow::Result<Ve
     stored_sessions_for_where(connection, "s.analysis_status = 'analyzed'", [])
 }
 
+pub fn project_slugs_for_recent_startup_analyzed_sessions(
+    connection: &rusqlite::Connection,
+    updated_after: &str,
+    processed_after: &str,
+) -> anyhow::Result<Vec<String>> {
+    let mut statement = connection.prepare(
+        r#"
+        SELECT DISTINCT p.slug
+        FROM sessions s
+        JOIN projects p ON p.id = s.project_id
+        WHERE s.analysis_status = 'analyzed'
+          AND s.updated_at >= ?1
+          AND s.processed_at IS NOT NULL
+          AND s.processed_at >= ?2
+        ORDER BY p.slug COLLATE NOCASE ASC
+        "#,
+    )?;
+    let rows = statement.query_map(params![updated_after, processed_after], |row| row.get(0))?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
 pub fn sessions_needing_memory_rebuild(
     connection: &rusqlite::Connection,
 ) -> anyhow::Result<Vec<StoredSession>> {

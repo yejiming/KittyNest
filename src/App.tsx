@@ -1745,7 +1745,7 @@ function SettingsView({
 
   return (
     <section className="settings-grid">
-      <div className="panel model-list-panel">
+      <div className="panel settings-primary-panel model-list-panel">
         <h2>Model List</h2>
         <div className="model-list-card-body">
           <div className="llm-model-list">
@@ -1825,7 +1825,7 @@ function SettingsView({
           <IconButton label="Save" icon={<CheckCircle2 size={16} />} onClick={saveModelList} disabled={!settings.scenarioModels.defaultModel} />
         </div>
       </div>
-      <div className="panel llm-settings-panel">
+      <div className="panel settings-primary-panel llm-settings-panel">
         <h2>LLM Settings</h2>
         <label className="settings-form-row">
           <span>Provider</span>
@@ -1906,7 +1906,7 @@ function SettingsView({
         onSync={onSyncObsidian}
         onSaveConfig={onSaveObsidianConfig}
       />
-      <div className="panel">
+      <div className="panel settings-secondary-panel reset-state-panel">
         <h3>Reset State</h3>
         <div className="button-column">
           <IconButton label="Reset Sessions" icon={<RefreshCw size={16} />} onClick={onResetSessions} busy={busy === "Reset sessions"} />
@@ -1967,7 +1967,7 @@ function ObsidianSyncPanel({
   }
 
   return (
-    <div className="panel obsidian-sync-panel">
+    <div className="panel settings-secondary-panel obsidian-sync-panel">
       <h3>Obsidian Sync</h3>
 
       <label className="settings-form-row">

@@ -20,6 +20,11 @@ pub fn import_historical_sessions(paths: &AppPaths) -> anyhow::Result<ImportSumm
     Ok(summary)
 }
 
+pub fn recent_session_updated_after(days: i64) -> String {
+    (chrono::Utc::now() - chrono::Duration::days(days))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
 pub fn run_next_analysis_job(paths: &AppPaths) -> anyhow::Result<bool> {
     crate::config::initialize_workspace(paths)?;
     let connection = crate::db::open(paths)?;
@@ -74,16 +79,30 @@ pub fn run_next_analysis_job(paths: &AppPaths) -> anyhow::Result<bool> {
 
     if job.kind == "save_agent_session" {
         let Some(project_slug) = job.project_slug.as_deref() else {
-            crate::db::fail_job(&connection, job.id, "Assistant session save job has no project slug")?;
+            crate::db::fail_job(
+                &connection,
+                job.id,
+                "Assistant session save job has no project slug",
+            )?;
             return Ok(true);
         };
         let Some(session_id) = job.session_id.as_deref() else {
-            crate::db::fail_job(&connection, job.id, "Assistant session save job has no session id")?;
+            crate::db::fail_job(
+                &connection,
+                job.id,
+                "Assistant session save job has no session id",
+            )?;
             return Ok(true);
         };
         match crate::commands::run_save_agent_session_job(paths, job.id, session_id, project_slug) {
             Ok(_) => {
-                crate::db::update_job_progress(&connection, job.id, 1, 0, "Assistant session saved")?;
+                crate::db::update_job_progress(
+                    &connection,
+                    job.id,
+                    1,
+                    0,
+                    "Assistant session saved",
+                )?;
                 crate::db::complete_job(&connection, job.id, "Assistant session saved")?;
             }
             Err(error) => {
@@ -242,6 +261,61 @@ pub fn run_next_analysis_job(paths: &AppPaths) -> anyhow::Result<bool> {
             }
             Err(e) => {
                 crate::db::fail_job(&connection, job.id, &e.to_string())?;
+            }
+        }
+        return Ok(true);
+    }
+
+    if job.kind == "analyze_recent_projects" {
+        let Some(updated_after) = job.updated_after.as_deref() else {
+            crate::db::fail_job(
+                &connection,
+                job.id,
+                "Recent project analysis job has no updated-after cutoff",
+            )?;
+            return Ok(true);
+        };
+        let result = (|| {
+            let project_slugs = crate::db::project_slugs_for_recent_startup_analyzed_sessions(
+                &connection,
+                updated_after,
+                &job.started_at,
+            )?;
+            for project_slug in &project_slugs {
+                crate::db::enqueue_analyze_project(&connection, project_slug)?;
+            }
+            crate::db::enqueue_rebuild_memories(&connection)?;
+            Ok::<Vec<String>, anyhow::Error>(project_slugs)
+        })();
+        match result {
+            Ok(project_slugs) => {
+                crate::db::update_job_progress(
+                    &connection,
+                    job.id,
+                    1,
+                    0,
+                    &format!(
+                        "Queued {} project{}; memory rebuild queued",
+                        project_slugs.len(),
+                        if project_slugs.len() == 1 { "" } else { "s" }
+                    ),
+                )?;
+                crate::db::complete_job(
+                    &connection,
+                    job.id,
+                    &format!(
+                        "Queued {} project{}; memory rebuild queued",
+                        project_slugs.len(),
+                        if project_slugs.len() == 1 { "" } else { "s" }
+                    ),
+                )?;
+            }
+            Err(error) => {
+                crate::db::fail_job(
+                    &connection,
+                    job.id,
+                    &format!("Recent project analysis failed: {error}"),
+                )?;
             }
         }
         return Ok(true);
@@ -423,10 +497,14 @@ pub fn run_next_analysis_job(paths: &AppPaths) -> anyhow::Result<bool> {
         &crate::config::read_llm_settings(paths)?,
         crate::config::LlmScenario::Memory,
     );
+    let actual_total = job.completed + job.failed + sessions.len();
+    if actual_total != job.total {
+        crate::db::update_job_total(&connection, job.id, actual_total)?;
+    }
     let (completed, failed) = process_session_job(
         paths,
         job.id,
-        job.total,
+        actual_total,
         job.completed,
         job.failed,
         sessions,
@@ -446,7 +524,7 @@ pub fn run_next_analysis_job(paths: &AppPaths) -> anyhow::Result<bool> {
             job.id,
             completed,
             failed,
-            &format!("Analyzed {completed} of {}", job.total),
+            &format!("Analyzed {completed} of {actual_total}"),
         )?;
     }
     Ok(true)
@@ -543,7 +621,10 @@ fn process_session_job(
                                 // Auto-trigger Obsidian sync if configured
                                 if let Ok(config) = crate::config::read_obsidian_config(&paths) {
                                     if config.auto_sync && config.vault_path.is_some() {
-                                        let _ = crate::db::enqueue_sync_to_obsidian(&connection, "incremental");
+                                        let _ = crate::db::enqueue_sync_to_obsidian(
+                                            &connection,
+                                            "incremental",
+                                        );
                                     }
                                 }
                                 (
@@ -579,4 +660,3 @@ fn process_session_job(
         .map(|progress| *progress)
         .unwrap_or((completed, failed))
 }
-

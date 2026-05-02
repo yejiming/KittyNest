@@ -3,15 +3,15 @@ mod tests {
     use super::{
         cancel_job, claim_next_job, delete_task_if_empty, enqueue_analyze_project_sessions,
         enqueue_analyze_session, enqueue_analyze_sessions, enqueue_review_project,
-        ensure_project_for_workdir,
-        enqueue_scan_sources, list_active_jobs, list_llm_provider_calls, list_projects,
-        list_sessions, list_tasks, mark_session_failed, mark_session_processed,
-        mark_session_processed_with_optional_task, mark_stale_running_jobs_queued, migrate, open,
-        record_llm_provider_call, replace_session_memories, reset_all_memories, reset_all_projects,
-        reset_all_sessions, reset_all_tasks, session_memories_by_session_id,
-        unprocessed_session_by_session_id, unprocessed_sessions,
-        unprocessed_sessions_updated_after, update_job_progress, update_project_progress,
-        update_project_review, update_task_status, upsert_raw_sessions, upsert_task,
+        enqueue_scan_sources, ensure_project_for_workdir, list_active_jobs,
+        list_llm_provider_calls, list_projects, list_sessions, list_tasks, mark_session_failed,
+        mark_session_processed, mark_session_processed_with_optional_task,
+        mark_stale_running_jobs_queued, migrate, open, record_llm_provider_call,
+        replace_session_memories, reset_all_memories, reset_all_projects, reset_all_sessions,
+        reset_all_tasks, session_memories_by_session_id, unprocessed_session_by_session_id,
+        unprocessed_sessions, unprocessed_sessions_updated_after, update_job_progress,
+        update_project_progress, update_project_review, update_task_status, upsert_raw_sessions,
+        upsert_task,
     };
     use crate::models::{AppPaths, MemorySearchResultRecord, RawMessage, RawSession};
 
@@ -236,6 +236,26 @@ mod tests {
         assert_eq!(jobs[0].kind, "analyze_sessions");
         assert_eq!(jobs[0].scope, "all_unprocessed");
         assert_eq!(jobs[0].status, "queued");
+        assert_eq!(jobs[0].total, 1);
+        assert_eq!(jobs[0].completed, 0);
+        assert_eq!(jobs[0].pending, 1);
+    }
+
+    #[test]
+    fn enqueue_sync_to_obsidian_persists_single_unit_total() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
+        std::fs::create_dir_all(&paths.data_dir).unwrap();
+        let connection = open(&paths).unwrap();
+        migrate(&connection).unwrap();
+
+        let job_id = super::enqueue_sync_to_obsidian(&connection, "incremental").unwrap();
+        let jobs = list_active_jobs(&connection).unwrap();
+
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].id, job_id);
+        assert_eq!(jobs[0].kind, "sync_to_obsidian");
+        assert_eq!(jobs[0].scope, "incremental");
         assert_eq!(jobs[0].total, 1);
         assert_eq!(jobs[0].completed, 0);
         assert_eq!(jobs[0].pending, 1);
@@ -471,6 +491,35 @@ mod tests {
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].kind, "scan_sources");
         assert_eq!(jobs[0].scope, "source_scan");
+    }
+
+    #[test]
+    fn enqueue_startup_maintenance_orders_scan_recent_session_analysis_and_project_coordinator() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
+        std::fs::create_dir_all(&paths.data_dir).unwrap();
+        let connection = open(&paths).unwrap();
+        migrate(&connection).unwrap();
+
+        super::enqueue_startup_maintenance(&connection, "2026-04-25T00:00:00Z").unwrap();
+        let jobs = list_active_jobs(&connection).unwrap();
+
+        assert_eq!(jobs.len(), 3);
+        assert_eq!(jobs[0].kind, "scan_sources");
+        assert_eq!(jobs[0].scope, "source_scan");
+        assert_eq!(jobs[1].kind, "analyze_sessions");
+        assert_eq!(jobs[1].scope, "all_unprocessed");
+        assert_eq!(
+            jobs[1].updated_after.as_deref(),
+            Some("2026-04-25T00:00:00Z")
+        );
+        assert_eq!(jobs[2].kind, "analyze_recent_projects");
+        assert_eq!(jobs[2].scope, "startup_recent_projects");
+        assert_eq!(
+            jobs[2].updated_after.as_deref(),
+            Some("2026-04-25T00:00:00Z")
+        );
+        assert_eq!(jobs[2].total, 1);
     }
 
     #[test]
@@ -1344,4 +1393,3 @@ mod tests {
         assert_eq!(counts[1].calls, 1);
     }
 }
-

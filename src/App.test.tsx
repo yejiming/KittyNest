@@ -141,6 +141,12 @@ const state: AppState = {
   jobs: [],
 };
 
+function panelForHeading(name: string) {
+  const panel = screen.getByRole("heading", { name }).closest(".panel");
+  expect(panel).not.toBeNull();
+  return panel as HTMLElement;
+}
+
 describe("KittyNest dashboard", () => {
   beforeEach(() => {
     cleanup();
@@ -1449,6 +1455,32 @@ describe("KittyNest dashboard", () => {
     expect(await screen.findByText(/memories reset: 1/i)).toBeInTheDocument();
     expect(getState).toHaveBeenCalledTimes(1);
     expect(getCachedState).toHaveBeenCalledTimes(4);
+  });
+
+  it("lays out settings cards as equal-height pairs", async () => {
+    vi.spyOn(api, "getAppState").mockResolvedValue(state);
+
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /^settings$/i }));
+
+    const grid = document.querySelector(".settings-grid");
+    expect(grid).not.toBeNull();
+    const modelList = panelForHeading("Model List");
+    const llmSettings = panelForHeading("LLM Settings");
+    const obsidianSync = panelForHeading("Obsidian Sync");
+    const resetState = panelForHeading("Reset State");
+
+    expect(Array.from((grid as HTMLElement).children)).toEqual([
+      modelList,
+      llmSettings,
+      obsidianSync,
+      resetState,
+    ]);
+    expect(modelList).toHaveClass("settings-primary-panel");
+    expect(llmSettings).toHaveClass("settings-primary-panel");
+    expect(obsidianSync).toHaveClass("settings-secondary-panel");
+    expect(resetState).toHaveClass("settings-secondary-panel");
   });
 
   it("saves LLM settings without rescanning session sources", async () => {

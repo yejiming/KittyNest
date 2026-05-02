@@ -36,6 +36,26 @@ pub fn enqueue_analyze_sessions(
     )
 }
 
+pub fn enqueue_startup_maintenance(
+    connection: &rusqlite::Connection,
+    updated_after: &str,
+) -> anyhow::Result<Vec<EnqueueJobResult>> {
+    Ok(vec![
+        enqueue_scan_sources(connection)?,
+        enqueue_analyze_sessions(connection, Some(updated_after))?,
+        enqueue_job(
+            connection,
+            "analyze_recent_projects",
+            "startup_recent_projects",
+            None,
+            None,
+            None,
+            Some(updated_after),
+            1,
+        )?,
+    ])
+}
+
 pub fn enqueue_analyze_project_sessions(
     connection: &rusqlite::Connection,
     project_slug: &str,
@@ -337,6 +357,22 @@ pub fn update_job_progress(
     Ok(())
 }
 
+pub fn update_job_total(
+    connection: &rusqlite::Connection,
+    job_id: i64,
+    total: usize,
+) -> anyhow::Result<()> {
+    connection.execute(
+        r#"
+        UPDATE jobs
+        SET total = ?1, updated_at = ?2
+        WHERE id = ?3
+        "#,
+        params![total as i64, crate::utils::now_rfc3339(), job_id],
+    )?;
+    Ok(())
+}
+
 pub fn complete_job(
     connection: &rusqlite::Connection,
     job_id: i64,
@@ -415,8 +451,8 @@ pub fn enqueue_sync_to_obsidian(
 ) -> anyhow::Result<i64> {
     let now = crate::utils::now_rfc3339();
     connection.execute(
-        "INSERT INTO jobs (kind, scope, status, message, started_at, updated_at)
-         VALUES ('sync_to_obsidian', ?1, 'queued', '', ?2, ?2)",
+        "INSERT INTO jobs (kind, scope, status, total, completed, failed, message, started_at, updated_at)
+         VALUES ('sync_to_obsidian', ?1, 'queued', 1, 0, 0, 'Queued for sync', ?2, ?2)",
         rusqlite::params![mode, now],
     )?;
     Ok(connection.last_insert_rowid())
@@ -446,4 +482,3 @@ fn job_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRecord> {
         completed_at: row.get(14)?,
     })
 }
-

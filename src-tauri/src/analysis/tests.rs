@@ -176,6 +176,56 @@ mod tests {
     }
 
     #[test]
+    fn run_next_analysis_job_refreshes_zero_total_after_startup_scan_inserts_sessions() {
+        let _mock_guard = crate::llm::test_support::guard();
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
+        std::fs::create_dir_all(&paths.data_dir).unwrap();
+        std::fs::create_dir_all(&paths.projects_dir).unwrap();
+        let mut connection = open(&paths).unwrap();
+        migrate(&connection).unwrap();
+
+        let job =
+            crate::db::enqueue_analyze_sessions(&connection, Some("2026-04-20T00:00:00Z")).unwrap();
+        upsert_raw_sessions(
+            &mut connection,
+            &[RawSession {
+                source: "codex".into(),
+                session_id: "startup-session".into(),
+                workdir: "/Users/kc/KittyNest".into(),
+                created_at: "2026-04-26T00:00:00Z".into(),
+                updated_at: "2026-04-26T00:05:00Z".into(),
+                raw_path: "/tmp/startup-session.jsonl".into(),
+                messages: vec![RawMessage {
+                    role: "user".into(),
+                    content: "Analyze after scan".into(),
+                }],
+            }],
+        )
+        .unwrap();
+        crate::llm::test_support::set_json_responses(vec![session_response(
+            "analyze-after-scan",
+            "Analyze After Scan",
+            "Startup scan summary.",
+        )]);
+
+        assert_eq!(job.total, 0);
+        assert!(run_next_analysis_job(&paths).unwrap());
+        let (completed, total, status, message): (i64, i64, String, String) = connection
+            .query_row(
+                "SELECT completed, total, status, message FROM jobs WHERE id = ?1",
+                rusqlite::params![job.job_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+
+        assert_eq!(completed, 1);
+        assert_eq!(total, 1);
+        assert_eq!(status, "completed");
+        assert_eq!(message, "Analyzed 1 of 1");
+    }
+
+    #[test]
     fn run_next_analysis_job_marks_session_failed_when_llm_is_unavailable() {
         let _mock_guard = crate::llm::test_support::guard();
         let temp = tempfile::tempdir().unwrap();
@@ -1185,6 +1235,93 @@ mod tests {
     }
 
     #[test]
+    fn run_next_analysis_job_queues_recent_startup_projects_before_memory_rebuild() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = AppPaths::from_data_dir(temp.path().join("kittynest"));
+        std::fs::create_dir_all(&paths.data_dir).unwrap();
+        std::fs::create_dir_all(&paths.projects_dir).unwrap();
+        let mut connection = open(&paths).unwrap();
+        migrate(&connection).unwrap();
+        upsert_raw_sessions(
+            &mut connection,
+            &[
+                RawSession {
+                    source: "codex".into(),
+                    session_id: "startup-recent".into(),
+                    workdir: "/Users/kc/StartupRecent".into(),
+                    created_at: "2026-04-27T00:00:00Z".into(),
+                    updated_at: "2026-04-27T00:05:00Z".into(),
+                    raw_path: "/tmp/startup-recent.jsonl".into(),
+                    messages: vec![RawMessage {
+                        role: "user".into(),
+                        content: "Analyze startup recent".into(),
+                    }],
+                },
+                RawSession {
+                    source: "codex".into(),
+                    session_id: "startup-before-boot".into(),
+                    workdir: "/Users/kc/StartupBeforeBoot".into(),
+                    created_at: "2026-04-27T00:00:00Z".into(),
+                    updated_at: "2026-04-27T00:06:00Z".into(),
+                    raw_path: "/tmp/startup-before-boot.jsonl".into(),
+                    messages: vec![RawMessage {
+                        role: "user".into(),
+                        content: "Already analyzed before startup".into(),
+                    }],
+                },
+            ],
+        )
+        .unwrap();
+        let recent = crate::db::unprocessed_session_by_session_id(&connection, "startup-recent")
+            .unwrap()
+            .remove(0);
+        crate::db::mark_session_processed_with_optional_task_at(
+            &connection,
+            recent.id,
+            None,
+            "Startup Recent",
+            "Recent summary.",
+            "/tmp/startup-recent/summary.md",
+            "2026-04-27T10:05:00Z",
+        )
+        .unwrap();
+        let before_boot =
+            crate::db::unprocessed_session_by_session_id(&connection, "startup-before-boot")
+                .unwrap()
+                .remove(0);
+        crate::db::mark_session_processed_with_optional_task_at(
+            &connection,
+            before_boot.id,
+            None,
+            "Startup Before Boot",
+            "Old summary.",
+            "/tmp/startup-before-boot/summary.md",
+            "2026-04-27T09:55:00Z",
+        )
+        .unwrap();
+        connection
+            .execute(
+                r#"
+                INSERT INTO jobs
+                  (kind, scope, updated_after, status, total, completed, failed, message, started_at, updated_at)
+                VALUES
+                  ('analyze_recent_projects', 'startup_recent_projects', '2026-04-20T00:00:00Z',
+                   'queued', 1, 0, 0, 'Queued for analysis', '2026-04-27T10:00:00Z', '2026-04-27T10:00:00Z')
+                "#,
+                [],
+            )
+            .unwrap();
+
+        assert!(run_next_analysis_job(&paths).unwrap());
+        let jobs = crate::db::list_active_jobs(&connection).unwrap();
+
+        assert_eq!(jobs.len(), 2);
+        assert_eq!(jobs[0].kind, "analyze_project");
+        assert_eq!(jobs[0].project_slug.as_deref(), Some("StartupRecent"));
+        assert_eq!(jobs[1].kind, "rebuild_memories");
+    }
+
+    #[test]
     fn run_next_analysis_job_processes_only_project_scoped_sessions() {
         let _mock_guard = crate::llm::test_support::guard();
         let temp = tempfile::tempdir().unwrap();
@@ -2186,4 +2323,3 @@ mod tests {
         }
     }
 }
-

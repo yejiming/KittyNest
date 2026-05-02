@@ -26,6 +26,8 @@ pub fn run() {
                 if let Ok(connection) = crate::db::open(&services.paths) {
                     let _ = crate::db::migrate(&connection);
                     let _ = crate::db::mark_stale_running_jobs_queued(&connection);
+                    let updated_after = crate::analysis::recent_session_updated_after(7);
+                    let _ = crate::db::enqueue_startup_maintenance(&connection, &updated_after);
                 }
                 loop {
                     match crate::analysis::run_next_analysis_job(&services.paths) {
