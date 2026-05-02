@@ -314,14 +314,14 @@ pub struct MemoryRelatedSession {
     pub shared_entities: Vec<String>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ObsidianVault {
     pub path: String,
     pub name: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncStatus {
     pub vault_path: Option<String>,
@@ -332,7 +332,7 @@ pub struct SyncStatus {
     pub kind_counts: SyncKindCounts,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncKindCounts {
     pub projects: usize,
@@ -342,7 +342,7 @@ pub struct SyncKindCounts {
     pub entities: usize,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncResult {
     pub created: usize,

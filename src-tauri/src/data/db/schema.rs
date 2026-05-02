@@ -213,3 +213,8 @@ fn add_column_if_missing(
     }
     Ok(())
 }
+
+pub fn drop_sync_state(connection: &rusqlite::Connection) -> anyhow::Result<()> {
+    connection.execute_batch("DROP TABLE IF EXISTS sync_state;")?;
+    Ok(())
+}
