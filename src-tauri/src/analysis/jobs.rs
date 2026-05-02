@@ -228,6 +228,25 @@ pub fn run_next_analysis_job(paths: &AppPaths) -> anyhow::Result<bool> {
         return Ok(true);
     }
 
+    if job.kind == "sync_to_obsidian" {
+        let config = crate::config::read_obsidian_config(paths)?;
+        let mode = job.scope.as_str();
+        match crate::sync::run_sync(paths, &config, mode) {
+            Ok(result) => {
+                let msg = format!(
+                    "Synced: {} created, {} updated, {} deleted, {} unchanged",
+                    result.created, result.updated, result.deleted, result.unchanged
+                );
+                crate::db::update_job_progress(&connection, job.id, 1, 0, &msg)?;
+                crate::db::complete_job(&connection, job.id, &msg)?;
+            }
+            Err(e) => {
+                crate::db::fail_job(&connection, job.id, &e.to_string())?;
+            }
+        }
+        return Ok(true);
+    }
+
     if job.kind == "analyze_project" {
         let Some(project_slug) = job.project_slug.as_deref() else {
             crate::db::fail_job(
@@ -354,6 +373,12 @@ pub fn run_next_analysis_job(paths: &AppPaths) -> anyhow::Result<bool> {
                         failed,
                         "AGENTS.md written",
                     )?;
+                    // Auto-trigger Obsidian sync if configured
+                    if let Ok(config) = crate::config::read_obsidian_config(paths) {
+                        if config.auto_sync && config.vault_path.is_some() {
+                            let _ = crate::db::enqueue_sync_to_obsidian(&connection, "incremental");
+                        }
+                    }
                 }
                 Err(error) => {
                     failure = Some(format!("AGENTS.md failed: {error}"));
@@ -515,6 +540,12 @@ fn process_session_job(
                         match result {
                             Ok(_) => {
                                 progress.0 += 1;
+                                // Auto-trigger Obsidian sync if configured
+                                if let Ok(config) = crate::config::read_obsidian_config(&paths) {
+                                    if config.auto_sync && config.vault_path.is_some() {
+                                        let _ = crate::db::enqueue_sync_to_obsidian(&connection, "incremental");
+                                    }
+                                }
                                 (
                                     progress.0,
                                     progress.1,

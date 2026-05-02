@@ -409,6 +409,19 @@ fn get_job(connection: &rusqlite::Connection, job_id: i64) -> anyhow::Result<Opt
         .map_err(Into::into)
 }
 
+pub fn enqueue_sync_to_obsidian(
+    connection: &rusqlite::Connection,
+    mode: &str,
+) -> anyhow::Result<i64> {
+    let now = crate::utils::now_rfc3339();
+    connection.execute(
+        "INSERT INTO jobs (kind, scope, status, message, started_at, updated_at)
+         VALUES ('sync_to_obsidian', ?1, 'queued', '', ?2, ?2)",
+        rusqlite::params![mode, now],
+    )?;
+    Ok(connection.last_insert_rowid())
+}
+
 fn job_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRecord> {
     let total: i64 = row.get(8)?;
     let completed: i64 = row.get(9)?;
