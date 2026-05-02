@@ -9,8 +9,11 @@ import type {
   MemoryEntityRecord,
   MemoryRelatedSession,
   MemorySearchRecord,
+  ObsidianVault,
   ScanResult,
   SessionMemoryDetail,
+  SyncResult,
+  SyncStatus,
 } from "./types";
 import { normalizeAgentContext, type SavedAgentSession } from "./agentTypes";
 
@@ -395,4 +398,56 @@ export async function listEntitySessions(entity: string): Promise<MemoryRelatedS
   }
   const result = await invoke<{ sessions: MemoryRelatedSession[] }>("list_entity_sessions", { entity });
   return result.sessions;
+}
+
+export async function detectObsidianVaults(): Promise<{ vaults: ObsidianVault[] }> {
+  if (!isTauriRuntime()) {
+    return { vaults: [] };
+  }
+  return invoke<{ vaults: ObsidianVault[] }>("detect_obsidian_vaults");
+}
+
+export async function syncToObsidian(mode: string): Promise<{ result: SyncResult }> {
+  if (!isTauriRuntime()) {
+    return { result: { created: 0, updated: 0, deleted: 0, unchanged: 0 } };
+  }
+  return invoke<{ result: SyncResult }>("sync_to_obsidian", { mode });
+}
+
+export async function getSyncStatus(): Promise<{ status: SyncStatus }> {
+  if (!isTauriRuntime()) {
+    return {
+      status: {
+        vaultPath: null,
+        autoSync: true,
+        deleteRemoved: true,
+        lastSyncAt: null,
+        totalSynced: 0,
+        kindCounts: { projects: 0, sessions: 0, tasks: 0, memories: 0, entities: 0 },
+      },
+    };
+  }
+  return invoke<{ status: SyncStatus }>("get_sync_status");
+}
+
+export async function enqueueSyncToObsidian(mode: string): Promise<{ jobId: number }> {
+  if (!isTauriRuntime()) {
+    return { jobId: 0 };
+  }
+  return invoke<{ jobId: number }>("enqueue_sync_to_obsidian_cmd", { mode });
+}
+
+export async function saveObsidianConfig(
+  vaultPath: string | null,
+  autoSync: boolean,
+  deleteRemoved: boolean,
+): Promise<{ saved: boolean }> {
+  if (!isTauriRuntime()) {
+    return { saved: true };
+  }
+  return invoke<{ saved: boolean }>("save_obsidian_config", {
+    vaultPath,
+    autoSync,
+    deleteRemoved,
+  });
 }

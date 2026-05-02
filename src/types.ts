@@ -191,3 +191,32 @@ export interface SessionMemoryDetail {
   memories: string[];
   relatedSessions: MemoryRelatedSession[];
 }
+
+export interface ObsidianVault {
+  path: string;
+  name: string;
+}
+
+export interface SyncStatus {
+  vaultPath: string | null;
+  autoSync: boolean;
+  deleteRemoved: boolean;
+  lastSyncAt: string | null;
+  totalSynced: number;
+  kindCounts: SyncKindCounts;
+}
+
+export interface SyncKindCounts {
+  projects: number;
+  sessions: number;
+  tasks: number;
+  memories: number;
+  entities: number;
+}
+
+export interface SyncResult {
+  created: number;
+  updated: number;
+  deleted: number;
+  unchanged: number;
+}
