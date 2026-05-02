@@ -232,3 +232,78 @@ fn hydrate_related_sessions(
         })
         .collect())
 }
+
+#[tauri::command]
+pub fn detect_obsidian_vaults() -> CommandResult<serde_json::Value> {
+    let vaults = crate::sync::obsidian::detect_vaults();
+    Ok(serde_json::json!({ "vaults": vaults }))
+}
+
+#[tauri::command]
+pub fn sync_to_obsidian(
+    mode: String,
+    services: State<'_, AppServices>,
+) -> CommandResult<serde_json::Value> {
+    let config = crate::config::read_obsidian_config(&services.paths)
+        .map_err(to_command_error)?;
+
+    let result = crate::sync::run_sync(&services.paths, &config, &mode)
+        .map_err(to_command_error)?;
+
+    Ok(serde_json::json!({ "result": result }))
+}
+
+#[tauri::command]
+pub fn get_sync_status(
+    services: State<'_, AppServices>,
+) -> CommandResult<serde_json::Value> {
+    let config = crate::config::read_obsidian_config(&services.paths)
+        .map_err(to_command_error)?;
+
+    let connection = crate::db::open(&services.paths).map_err(to_command_error)?;
+    let kind_counts = crate::sync::state::count_by_kind(&connection)
+        .map_err(to_command_error)?;
+
+    let status = crate::models::SyncStatus {
+        vault_path: config.vault_path,
+        auto_sync: config.auto_sync,
+        delete_removed: config.delete_removed,
+        last_sync_at: None,
+        total_synced: kind_counts.projects
+            + kind_counts.sessions
+            + kind_counts.tasks
+            + kind_counts.memories
+            + kind_counts.entities,
+        kind_counts,
+    };
+
+    Ok(serde_json::json!({ "status": status }))
+}
+
+#[tauri::command]
+pub fn enqueue_sync_to_obsidian_cmd(
+    mode: String,
+    services: State<'_, AppServices>,
+) -> CommandResult<serde_json::Value> {
+    let connection = crate::db::open(&services.paths).map_err(to_command_error)?;
+    let job_id = crate::db::enqueue_sync_to_obsidian(&connection, &mode)
+        .map_err(to_command_error)?;
+    Ok(serde_json::json!({ "jobId": job_id }))
+}
+
+#[tauri::command]
+pub fn save_obsidian_config(
+    vault_path: Option<String>,
+    auto_sync: bool,
+    delete_removed: bool,
+    services: State<'_, AppServices>,
+) -> CommandResult<serde_json::Value> {
+    let config = crate::models::ObsidianConfig {
+        vault_path,
+        auto_sync,
+        delete_removed,
+    };
+    crate::config::write_obsidian_config(&services.paths, &config)
+        .map_err(to_command_error)?;
+    Ok(serde_json::json!({ "saved": true }))
+}

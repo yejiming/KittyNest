@@ -74,7 +74,12 @@ pub fn run() {
             commands::reset_projects,
             commands::reset_tasks,
             commands::reset_memories,
-            commands::rebuild_memories
+            commands::rebuild_memories,
+            commands::detect_obsidian_vaults,
+            commands::sync_to_obsidian,
+            commands::get_sync_status,
+            commands::enqueue_sync_to_obsidian_cmd,
+            commands::save_obsidian_config
         ])
         .run(tauri::generate_context!())
         .expect("error while running KittyNest");
