@@ -1901,6 +1901,11 @@ function SettingsView({
           <IconButton label="Save Model" icon={<CheckCircle2 size={16} />} onClick={saveModel} disabled={!canSaveModel} />
         </div>
       </div>
+      <ObsidianSyncPanel
+        busy={busy}
+        onSync={onSyncObsidian}
+        onSaveConfig={onSaveObsidianConfig}
+      />
       <div className="panel">
         <h3>Reset State</h3>
         <div className="button-column">
@@ -1910,11 +1915,6 @@ function SettingsView({
           <IconButton label="Reset Memories" icon={<RefreshCw size={16} />} onClick={onResetMemories} busy={busy === "Reset memories"} />
         </div>
       </div>
-      <ObsidianSyncPanel
-        busy={busy}
-        onSync={onSyncObsidian}
-        onSaveConfig={onSaveObsidianConfig}
-      />
     </section>
   );
 }

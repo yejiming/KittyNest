@@ -808,14 +808,21 @@ button {
 .settings-grid {
   align-items: stretch;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  grid-template-rows: minmax(0, auto) minmax(160px, auto) minmax(0, auto);
+  grid-template-rows: minmax(0, auto) minmax(160px, auto);
 }
 
 .model-list-panel {
   display: flex;
   flex-direction: column;
-  grid-row: span 3;
+  grid-row: span 2;
   min-height: 0;
+  max-height: 480px;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.model-list-panel::-webkit-scrollbar {
+  display: none;
 }
 
 .llm-settings-panel {
