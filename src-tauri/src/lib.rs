@@ -8,6 +8,7 @@ pub mod markdown;
 pub mod memory;
 pub mod scanner;
 pub mod services;
+pub mod sync;
 pub mod utils;
 
 pub use data::{db, graph, models};
