@@ -808,13 +808,13 @@ button {
 .settings-grid {
   align-items: stretch;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  grid-template-rows: minmax(0, auto) minmax(160px, auto);
+  grid-template-rows: minmax(0, auto) minmax(160px, auto) minmax(0, auto);
 }
 
 .model-list-panel {
   display: flex;
   flex-direction: column;
-  grid-row: span 2;
+  grid-row: span 3;
   min-height: 0;
 }
 
@@ -2322,15 +2322,30 @@ select {
   margin: 0 0 8px;
 }
 
+.obsidian-sync-panel .settings-form-row {
+  grid-template-columns: 180px minmax(0, 1fr);
+}
+
+.obsidian-sync-panel .settings-form-row input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  accent-color: #74fff1;
+  justify-self: start;
+}
+
 .vault-selector {
   display: flex;
   gap: 8px;
   align-items: center;
   width: 100%;
+  min-width: 0;
 }
 
 .vault-selector select {
   flex: 1;
+  min-width: 0;
+  text-overflow: ellipsis;
+  overflow: hidden;
 }
 
 .obsidian-sync-actions {

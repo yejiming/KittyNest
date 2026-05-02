@@ -1979,8 +1979,8 @@ function ObsidianSyncPanel({
           >
             <option value="">Select a vault...</option>
             {vaults.map((v) => (
-              <option key={v.path} value={v.path}>
-                {v.name} ({v.path})
+              <option key={v.path} value={v.path} title={v.path}>
+                {v.name}
               </option>
             ))}
             {selectedVault && !vaults.find((v) => v.path === selectedVault) && (
