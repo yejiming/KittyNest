@@ -311,6 +311,76 @@ impl EmptyStringExt for String {
     }
 }
 
+pub fn read_obsidian_config(paths: &AppPaths) -> anyhow::Result<ObsidianConfig> {
+    if !paths.config_path.exists() {
+        return Ok(ObsidianConfig::default());
+    }
+    let content = std::fs::read_to_string(&paths.config_path)?;
+    let value: toml::Value = toml::from_str(&content)?;
+    if let Some(obsidian) = value.get("obsidian") {
+        let vault_path = obsidian
+            .get("vault_path")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let auto_sync = obsidian
+            .get("auto_sync")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let delete_removed = obsidian
+            .get("delete_removed")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        Ok(ObsidianConfig {
+            vault_path,
+            auto_sync,
+            delete_removed,
+        })
+    } else {
+        Ok(ObsidianConfig::default())
+    }
+}
+
+pub fn write_obsidian_config(paths: &AppPaths, config: &ObsidianConfig) -> anyhow::Result<()> {
+    std::fs::create_dir_all(&paths.data_dir)?;
+
+    // Read existing config or start empty
+    let existing = if paths.config_path.exists() {
+        std::fs::read_to_string(&paths.config_path)?
+    } else {
+        String::new()
+    };
+    let mut value: toml::Value = if existing.is_empty() {
+        toml::Value::Table(toml::map::Map::new())
+    } else {
+        toml::from_str(&existing)?
+    };
+
+    // Build obsidian section
+    let mut obsidian_table = toml::map::Map::new();
+    if let Some(ref vp) = config.vault_path {
+        obsidian_table.insert("vault_path".to_string(), toml::Value::String(vp.clone()));
+    }
+    obsidian_table.insert(
+        "auto_sync".to_string(),
+        toml::Value::Boolean(config.auto_sync),
+    );
+    obsidian_table.insert(
+        "delete_removed".to_string(),
+        toml::Value::Boolean(config.delete_removed),
+    );
+
+    if let Some(table) = value.as_table_mut() {
+        table.insert(
+            "obsidian".to_string(),
+            toml::Value::Table(obsidian_table),
+        );
+    }
+
+    let serialized = toml::to_string_pretty(&value)?;
+    std::fs::write(&paths.config_path, serialized)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

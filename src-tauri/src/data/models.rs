@@ -350,3 +350,21 @@ pub struct SyncResult {
     pub deleted: usize,
     pub unchanged: usize,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ObsidianConfig {
+    pub vault_path: Option<String>,
+    pub auto_sync: bool,
+    pub delete_removed: bool,
+}
+
+impl Default for ObsidianConfig {
+    fn default() -> Self {
+        Self {
+            vault_path: None,
+            auto_sync: true,
+            delete_removed: true,
+        }
+    }
+}

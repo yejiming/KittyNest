@@ -1,4 +1,4 @@
-use crate::models::{AppPaths, LlmModelSettings, LlmScenarioModels, LlmSettings};
+use crate::models::{AppPaths, LlmModelSettings, LlmScenarioModels, LlmSettings, ObsidianConfig};
 
 const DEFAULT_MAX_CONTEXT: usize = 128_000;
 const DEFAULT_MAX_TOKENS: usize = 4_096;
