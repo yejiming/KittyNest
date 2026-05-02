@@ -259,11 +259,13 @@ export default function App() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="window-dots" aria-hidden="true">
-          <span />
-          <span />
-          <span />
-        </div>
+        {!tauriRuntime && (
+          <div className="window-dots" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </div>
+        )}
         <button className="brand" aria-label="Dashboard home" onClick={() => setView("dashboard")}>
           <img className="brand-avatar" src={kittyAvatar} alt="KittyNest app logo" />
           <span>
