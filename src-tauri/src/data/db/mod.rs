@@ -19,4 +19,5 @@ include!("sessions.rs");
 include!("jobs.rs");
 include!("tasks.rs");
 include!("memories.rs");
+include!("sync.rs");
 include!("tests.rs");

@@ -313,3 +313,40 @@ pub struct MemoryRelatedSession {
     pub project_slug: String,
     pub shared_entities: Vec<String>,
 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObsidianVault {
+    pub path: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStatus {
+    pub vault_path: Option<String>,
+    pub auto_sync: bool,
+    pub delete_removed: bool,
+    pub last_sync_at: Option<String>,
+    pub total_synced: usize,
+    pub kind_counts: SyncKindCounts,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncKindCounts {
+    pub projects: usize,
+    pub sessions: usize,
+    pub tasks: usize,
+    pub memories: usize,
+    pub entities: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncResult {
+    pub created: usize,
+    pub updated: usize,
+    pub deleted: usize,
+    pub unchanged: usize,
+}

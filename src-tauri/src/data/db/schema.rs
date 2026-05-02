@@ -104,6 +104,16 @@ pub fn migrate(connection: &rusqlite::Connection) -> anyhow::Result<()> {
           provider TEXT PRIMARY KEY,
           calls INTEGER NOT NULL DEFAULT 0
         );
+
+        CREATE TABLE IF NOT EXISTS sync_state (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          kind TEXT NOT NULL,
+          source_id TEXT NOT NULL,
+          content_hash TEXT NOT NULL,
+          last_synced_at TEXT NOT NULL,
+          obsidian_path TEXT NOT NULL,
+          UNIQUE(kind, source_id)
+        );
         "#,
     )?;
     add_column_if_missing(
