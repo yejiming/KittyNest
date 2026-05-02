@@ -806,17 +806,17 @@ button {
 }
 
 .settings-grid {
-  align-items: stretch;
+  align-items: start;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  grid-template-rows: minmax(0, auto) minmax(160px, auto);
+  grid-template-rows: auto auto auto;
 }
 
 .model-list-panel {
   display: flex;
   flex-direction: column;
-  grid-row: span 2;
-  min-height: 0;
-  max-height: 480px;
+  grid-row: 1 / 4;
+  align-self: start;
+  max-height: 430px;
   overflow-y: auto;
   scrollbar-width: none;
 }
@@ -828,7 +828,6 @@ button {
 .llm-settings-panel {
   display: flex;
   flex-direction: column;
-  min-height: 430px;
 }
 
 .model-list-card-body {
@@ -2323,6 +2322,8 @@ select {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  grid-column: 2;
+  grid-row: 2;
 }
 
 .obsidian-sync-panel h3 {
