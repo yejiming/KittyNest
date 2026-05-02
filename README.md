@@ -1,7 +1,7 @@
 # KittyNest
 
 <p align="center">
-  <img src="docs/kittynest-ui-concept.png" alt="KittyNest UI Concept" width="800"/>
+  <img src="docs/assets/homepage.png" alt="KittyNest UI Concept" width="800"/>
 </p>
 
 <p align="center">
