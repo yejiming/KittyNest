@@ -12,7 +12,9 @@ import {
   Loader2,
   Plus,
   RefreshCw,
+  Save,
   ScanLine,
+  Search,
   Send,
   Settings,
   ShieldCheck,
@@ -61,6 +63,10 @@ import {
   updateTaskStatus,
   isTauriRuntime,
   stopJob,
+  detectObsidianVaults,
+  syncToObsidian,
+  getSyncStatus,
+  saveObsidianConfig,
 } from "./api";
 import { AgentDrawer } from "./AgentDrawer";
 import type { AgentMessage, SavedAgentSession } from "./agentTypes";
@@ -450,6 +456,19 @@ export default function App() {
             const result = await resetMemories();
             return `Memories reset: ${result.reset}`;
           }, "cached")}
+          onSyncObsidian={(mode) => {
+            const label = mode === "full" ? "Sync Obsidian Full" : "Sync Obsidian";
+            runAction(label, async () => {
+              const { result } = await syncToObsidian(mode);
+              return `Sync complete: ${result.created} created, ${result.updated} updated, ${result.deleted} deleted`;
+            });
+          }}
+          onSaveObsidianConfig={(vaultPath, autoSync, deleteRemoved) => {
+            runAction("Save Obsidian Config", async () => {
+              await saveObsidianConfig(vaultPath, autoSync, deleteRemoved);
+              return "Obsidian config saved";
+            });
+          }}
         />}
       </main>
 
@@ -1640,6 +1659,8 @@ function SettingsView({
   onResetProjects,
   onResetTasks,
   onResetMemories,
+  onSyncObsidian,
+  onSaveObsidianConfig,
 }: {
   state: AppState;
   busy: string | null;
@@ -1648,6 +1669,8 @@ function SettingsView({
   onResetProjects: () => void;
   onResetTasks: () => void;
   onResetMemories: () => void;
+  onSyncObsidian: (mode: string) => void;
+  onSaveObsidianConfig: (vaultPath: string | null, autoSync: boolean, deleteRemoved: boolean) => void;
 }) {
   const [settings, setSettings] = useState(() => normalizeLlmSettings(state.llmSettings));
   const [draftModel, setDraftModel] = useState<LlmModelSettings>(() =>
@@ -1887,7 +1910,142 @@ function SettingsView({
           <IconButton label="Reset Memories" icon={<RefreshCw size={16} />} onClick={onResetMemories} busy={busy === "Reset memories"} />
         </div>
       </div>
+      <ObsidianSyncPanel
+        busy={busy}
+        onSync={onSyncObsidian}
+        onSaveConfig={onSaveObsidianConfig}
+      />
     </section>
+  );
+}
+
+function ObsidianSyncPanel({
+  busy,
+  onSync,
+  onSaveConfig,
+}: {
+  busy: string | null;
+  onSync: (mode: string) => void;
+  onSaveConfig: (vaultPath: string | null, autoSync: boolean, deleteRemoved: boolean) => void;
+}) {
+  const [vaults, setVaults] = useState<{ path: string; name: string }[]>([]);
+  const [selectedVault, setSelectedVault] = useState<string>("");
+  const [autoSync, setAutoSync] = useState(true);
+  const [deleteRemoved, setDeleteRemoved] = useState(true);
+  const [syncStatus, setSyncStatus] = useState<any>(null);
+  const [detecting, setDetecting] = useState(false);
+
+  useEffect(() => {
+    loadStatus();
+  }, []);
+
+  async function loadStatus() {
+    try {
+      const { status } = await getSyncStatus();
+      setSyncStatus(status);
+      if (status.vaultPath) setSelectedVault(status.vaultPath);
+      setAutoSync(status.autoSync);
+      setDeleteRemoved(status.deleteRemoved);
+    } catch {}
+  }
+
+  async function handleDetect() {
+    setDetecting(true);
+    try {
+      const { vaults: found } = await detectObsidianVaults();
+      setVaults(found);
+      if (found.length === 1) {
+        setSelectedVault(found[0].path);
+      }
+    } finally {
+      setDetecting(false);
+    }
+  }
+
+  function handleSave() {
+    onSaveConfig(selectedVault || null, autoSync, deleteRemoved);
+  }
+
+  return (
+    <div className="panel obsidian-sync-panel">
+      <h3>Obsidian Sync</h3>
+
+      <label className="settings-form-row">
+        <span>Vault</span>
+        <div className="vault-selector">
+          <select
+            value={selectedVault}
+            onChange={(e) => setSelectedVault(e.target.value)}
+          >
+            <option value="">Select a vault...</option>
+            {vaults.map((v) => (
+              <option key={v.path} value={v.path}>
+                {v.name} ({v.path})
+              </option>
+            ))}
+            {selectedVault && !vaults.find((v) => v.path === selectedVault) && (
+              <option value={selectedVault}>{selectedVault}</option>
+            )}
+          </select>
+          <IconButton
+            label={detecting ? "Detecting..." : "Detect"}
+            icon={<Search size={14} />}
+            onClick={handleDetect}
+            busy={detecting}
+          />
+        </div>
+      </label>
+
+      <label className="settings-form-row">
+        <span>Auto-sync after analysis</span>
+        <input
+          type="checkbox"
+          checked={autoSync}
+          onChange={(e) => setAutoSync(e.target.checked)}
+        />
+      </label>
+
+      <label className="settings-form-row">
+        <span>Delete removed notes</span>
+        <input
+          type="checkbox"
+          checked={deleteRemoved}
+          onChange={(e) => setDeleteRemoved(e.target.checked)}
+        />
+      </label>
+
+      <div className="obsidian-sync-actions">
+        <IconButton
+          label="Save Config"
+          icon={<Save size={14} />}
+          onClick={handleSave}
+          busy={busy === "Save Obsidian Config"}
+        />
+        <IconButton
+          label="Sync Now"
+          icon={<RefreshCw size={14} />}
+          onClick={() => onSync("incremental")}
+          busy={busy === "Sync Obsidian"}
+        />
+        <IconButton
+          label="Full Resync"
+          icon={<RefreshCw size={14} />}
+          onClick={() => onSync("full")}
+          busy={busy === "Sync Obsidian Full"}
+        />
+      </div>
+
+      {syncStatus && (
+        <div className="obsidian-sync-status">
+          <span>
+            Synced: {syncStatus.totalSynced} notes
+            ({syncStatus.kindCounts.projects} projects, {syncStatus.kindCounts.sessions} sessions,{' '}
+            {syncStatus.kindCounts.tasks} tasks, {syncStatus.kindCounts.memories} memories,{' '}
+            {syncStatus.kindCounts.entities} entities)
+          </span>
+        </div>
+      )}
+    </div>
   );
 }
 

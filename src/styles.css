@@ -2311,3 +2311,38 @@ select {
     transform: rotate(360deg);
   }
 }
+
+.obsidian-sync-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.obsidian-sync-panel h3 {
+  margin: 0 0 8px;
+}
+
+.vault-selector {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+}
+
+.vault-selector select {
+  flex: 1;
+}
+
+.obsidian-sync-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.obsidian-sync-status {
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 8px;
+  background: var(--bg-secondary);
+  border-radius: 6px;
+}
